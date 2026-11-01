@@ -673,7 +673,7 @@ void bbp_get_info(bbp_info_t *out)
     out->max_sp = s_store.max_sp;
     memcpy(out->sp, s_store.sp, sizeof(out->sp));
     xSemaphoreGive(s_lock);
-    out->radio_on = s_radio_on;
+    out->radio_on = s_radio_on && !s_stopping;
     out->connected = s_connected;
     out->subscribed = s_subscribed;
 }
@@ -694,7 +694,9 @@ bool bbp_ext_active(void)
 
 bbp_link_t bbp_link_state(void)
 {
-    if (!s_radio_on) {
+    // Stopped (bbp_stop(): deep sleep, battery calibration) counts as off: the
+    // stack is still up but nothing is sent any more
+    if (!s_radio_on || s_stopping) {
         return BBP_LINK_OFF;
     }
     return s_connected ? BBP_LINK_CONNECTED : BBP_LINK_ADVERTISING;

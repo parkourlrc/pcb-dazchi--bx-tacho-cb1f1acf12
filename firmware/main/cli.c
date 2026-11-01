@@ -186,6 +186,13 @@ static int cmd_status(int argc, char **argv)
     } else {
         cli_printf("vbat cal    : none (nominal divider ratio). See 'cal vbat start'.\n");
     }
+    batt_curve_t curve;
+    if (battery_curve(&curve)) {
+        cli_printf("batt curve  : measured, %u-%u mV over %lu min ('cal batt show')\n", curve.mv[0],
+                   curve.mv[BATT_CURVE_POINTS - 1], (unsigned long)(curve.duration_s / 60));
+    } else {
+        cli_printf("batt curve  : rough default ('cal batt start' measures one)\n");
+    }
     bbp_info_t b;
     bbp_get_info(&b);
     cli_printf("battle pass : BLE %s, %d shots in history, %lu total, max %u\n",
@@ -766,10 +773,81 @@ static int cmd_cal_load(int argc, char **argv)
     return 0;
 }
 
+// "100 % 4180 mV, 90 % 4050 mV, ..." for the curve in use
+static void print_batt_curve(void)
+{
+    batt_curve_t c;
+    if (!battery_curve(&c)) {
+        cli_printf("battery curve: the rough default (100 %% 4200, 50 %% 3800, 10 %% 3600, 0 %% 3300 mV). "
+                   "See 'cal batt start'.\n");
+        return;
+    }
+    cli_printf("battery curve: measured over %lu h %02lu min of discharge\n", (unsigned long)(c.duration_s / 3600),
+               (unsigned long)(c.duration_s / 60 % 60));
+    for (int k = 0; k < BATT_CURVE_POINTS; k++) {
+        cli_printf("  %3d %%  %u mV\n", 100 - k * BATT_CURVE_STEP_PCT, c.mv[k]);
+    }
+}
+
+// cal batt start | stop | show | clear: the battery percentage curve, from a full
+// discharge at a steady load (APP_MODE_BATTCAL in main.c does the run)
+static int cmd_cal_batt(int argc, char **argv)
+{
+    if (argc == 2 && !strcmp(argv[1], "start")) {
+        if (app_get_mode() != APP_MODE_RUN) {
+            cli_printf("Leave the current mode first (diag off, meter off, cal vbat stop).\n");
+            return 1;
+        }
+        if (!vbat_cal_valid()) {
+            cli_printf("Run the VBAT calibration first ('cal vbat start'): the curve is only as good as the "
+                       "voltage readings.\n");
+            return 1;
+        }
+        app_snapshot_t s;
+        app_get_snapshot(&s);
+        if (s.batt.src != POWER_SRC_FULL) {
+            cli_printf("Charge the battery to full first: plug in USB and wait until 'status' shows the power "
+                       "as USB, full.\n");
+            return 1;
+        }
+        app_set_mode(APP_MODE_BATTCAL);
+        cli_printf("Battery calibration armed. Unplug USB to start: Bluetooth turns off and BX Tacho runs\n"
+                   "on its battery at a steady load until it reaches %d mV (several hours), then saves the\n"
+                   "curve and goes to deep sleep. Plugging USB in again cancels it.\n", CONFIG_BXT_CUTOFF_BATT_MV);
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "stop")) {
+        if (app_get_mode() != APP_MODE_BATTCAL) {
+            cli_printf("No battery calibration running.\n");
+            return 1;
+        }
+        app_set_mode(APP_MODE_RUN);
+        cli_printf("battery calibration cancelled\n");
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "show")) {
+        print_batt_curve();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "clear")) {
+        if (battery_clear_curve() != ESP_OK) {
+            cli_printf("Couldn't clear the curve.\n");
+            return 1;
+        }
+        cli_printf("measured battery curve cleared: back to the rough default\n");
+        return 0;
+    }
+    cli_printf("usage: cal batt start | stop | show | clear\n");
+    return 1;
+}
+
 static int cmd_cal(int argc, char **argv)
 {
     if (argc >= 2 && !strcmp(argv[1], "vbat")) {
         return cmd_cal_vbat(argc - 1, argv + 1);
+    }
+    if (argc >= 2 && !strcmp(argv[1], "batt")) {
+        return cmd_cal_batt(argc - 1, argv + 1);
     }
     if (argc >= 2 && !strcmp(argv[1], "load")) {
         int ret = cmd_cal_load(argc - 1, argv + 1);
@@ -780,7 +858,8 @@ static int cmd_cal(int argc, char **argv)
     }
 usage:
     cli_printf("usage: cal load black|white empty|loaded|clear\n"
-               "       cal vbat start | point <mV> | save | verify <mV> | show | stop\n");
+               "       cal vbat start | point <mV> | save | verify <mV> | show | stop\n"
+               "       cal batt start | stop | show | clear\n");
     return 1;
 }
 
@@ -1057,7 +1136,7 @@ static const cli_cmd_t s_cmds[] = {
     {"meter", "meter on|off | meter | meter log [seconds] [interval_ms]: continuous RPM (CSV); Ctrl-C stops the log", cmd_meter},
     {"rpm", "rpm on|off | thr [black|white <mV>] | sense [count] | scan [black|white] [seconds] [apply] (thresholds per launcher: setting one or applying a scan needs the launcher named)", cmd_rpm},
     {"load", "load [count]: print ambient-cancelled LOAD_SENSE readings; load flash [count] [settle_us]: a full poll next to a short flash sample (as while a top is loaded); load led on|off|auto: hold the load LED on or off (diag or meter mode; readings then show the raw LOAD_SENSE), or back to normal", cmd_load},
-    {"cal", "cal load black|white empty|loaded|clear: load sensor, per launcher; cal vbat start|point <mV>|save|verify <mV>|show|stop: production VBAT calibration (kept by 'cfg reset')", cmd_cal},
+    {"cal", "cal load black|white empty|loaded|clear: load sensor, per launcher; cal vbat start|point <mV>|save|verify <mV>|show|stop: production VBAT calibration (kept by 'cfg reset'); cal batt start|stop|show|clear: battery percentage curve from a full discharge (kept by 'cfg reset')", cmd_cal},
     {"cfg", "cfg edges <n> | cfg lightsleep on|off | cfg flip on|off (display turned 180 degrees, for the other hand) | cfg autowhite on|off (automatic white launcher detection; off: always the black launcher's settings) | cfg ext on|off (optional Battle Pass extension, in builds that have one; restarts) | cfg reset", cmd_cfg},
     {"launch", "launch [n]: last launch edge by edge (first n edges, default 60), with the release and dropped edges", cmd_launch},
     {"ble", "ble | ble on|off: Battle Pass emulation and the console over BLE (on|off restarts)", cmd_ble},

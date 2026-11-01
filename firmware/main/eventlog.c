@@ -65,6 +65,7 @@ static const char *sleep_reason_name(int r)
     case APP_SLEEP_IDLE:     return "idle";
     case APP_SLEEP_LOW_BATT: return "low battery";
     case APP_SLEEP_COMMAND:  return "command";
+    case APP_SLEEP_BATTCAL:  return "battery calibration done";
     default:                 return "?";
     }
 }
@@ -166,6 +167,9 @@ static void print_entry(const ev_entry_t *e)
         break;
     case EV_BLE_GESTURE:
         cli_printf("BLE GESTURE  BLE switched %s, restarting\n", e->a ? "on" : "off");
+        break;
+    case EV_BATTCAL:
+        cli_printf("BATT CAL     %s, %d min of discharge\n", e->a ? "curve saved" : "too short, not saved", e->b);
         break;
     case EV_LAUNCHER:
         cli_printf("LAUNCHER     %s, LOAD_SENSE %d mV\n", launcher_name(e->a), e->b);

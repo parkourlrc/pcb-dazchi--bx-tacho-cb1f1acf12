@@ -43,10 +43,10 @@ idf.py -B build/release -D SDKCONFIG=build/release/sdkconfig -D "SDKCONFIG_DEFAU
 Every build also writes the files to publish, named after `PROJECT_VER` in
 `CMakeLists.txt` (with `-bbp` for a build with the extension):
 
-- `build/release/bx-tacho-v2.3.0.bin`: for updates from the web app (USB or
+- `build/release/bx-tacho-v2.4.0.bin`: for updates from the web app (USB or
   Bluetooth) or `write-flash 0x10000` (with `otadata`, see above). A copy of
   `bx-tacho.bin`, which `idf.py flash` keeps using.
-- `build/release/bx-tacho-v2.3.0-merged.bin`: everything from 0x0 (what
+- `build/release/bx-tacho-v2.4.0-merged.bin`: everything from 0x0 (what
   `idf.py flash` writes), for a blank board (`write-flash 0x0`). It overwrites
   NVS (settings and shot history) but ends below `fctry`, so the battery
   calibration stays.
@@ -67,7 +67,7 @@ Tunables are under **BX Tacho** in `idf.py menuconfig` (`main/Kconfig.projbuild`
 | `main/rpm.c` | RPM channel power sequencing, threshold PWM, edge-timestamp ISR |
 | `main/load.c` | Load sensor: ambient-cancelled ADC reads, black/white launcher detection, calibrated hysteresis classifier |
 | `main/launch.c` | EMPTY → LOADED → PULLING → RESULT state machine, peak RPM |
-| `main/battery.c` | VBAT, USB presence, charge state |
+| `main/battery.c` | VBAT, USB presence, charge state, battery percentage (rough or measured curve) and the discharge log behind `cal batt` |
 | `main/display.c` | SSD1315 OLED via `esp_lcd`, framebuffer and 5×7 font |
 | `main/settings.c` | Calibration stored in NVS |
 | `main/bbp.c` | Battle Pass (BX-09) emulation over BLE and the shot history, see below |
@@ -92,6 +92,7 @@ Tunables are under **BX Tacho** in `idf.py menuconfig` (`main/Kconfig.projbuild`
 | `load led on\|off\|auto` | Hold the load LED on (diag or meter mode), to test its crosstalk into the RPM sensor, or off (no measurement flashes, only ambient light); `load` and the diag screen then show the raw LOAD_SENSE voltage. `auto` goes back to normal measurements, as does leaving diag or meter mode. `rpm scan` keeps it off while it samples. In normal use it is only flashed while the RPM channel is armed, as its light reflected off a loaded top reaches the RPM sensor: at each rising RPM edge while the disc turns, off again within 90 % of the disc's white part (so it can't make or move a rising edge), and every 10 ms while the disc is still |
 | `cal load black\|white empty\|loaded\|clear` | Calibrate the load sensor for one launcher |
 | `cal vbat start` … `stop` | Production VBAT calibration, see below |
+| `cal batt start\|stop\|show\|clear` | Battery percentage calibration from a full discharge, see below |
 | `cfg edges <n>` | Rising edges per launcher revolution |
 | `cfg lightsleep on\|off` | Automatic light sleep on battery (default on), for power debugging |
 | `cfg flip on\|off` | Turn the display 180 degrees, for holding the launcher in the other hand (default off; applies at once, kept by `cfg reset`) |
@@ -290,6 +291,36 @@ USB connection, `ble off` takes its radio bursts away too.
 The calibration lives in its own NVS partition (`fctry`, see
 `partitions.csv`). `cfg reset` and NVS recovery never touch it; only a new
 calibration or a full flash erase replaces it.
+
+## Battery percentage calibration
+
+Without it, the battery percentage comes from a rough LiPo curve (100 % at
+4.2 V, 50 % at 3.8 V, 10 % at 3.6 V, 0 % at 3.3 V). This measures the real
+curve of the battery fitted, by discharging it once from full to the
+deep-sleep cutoff (3.3 V, `CONFIG_BXT_CUTOFF_BATT_MV`) at a steady load, so
+0 % means BX Tacho is about to go to sleep. It needs the VBAT calibration
+done first.
+
+```
+cal batt start      # USB plugged in, charger finished ('status': USB, full)
+                    # then unplug USB: the run starts
+cal batt show       # afterwards: the curve, 100 % to 0 % in 10 % steps
+cal batt clear      # back to the rough curve
+```
+
+Unplugging USB starts the run. BX Tacho turns Bluetooth off, keeps the
+display on at constant brightness, stays out of light sleep at full CPU
+clock and keeps the RPM channel and the load LED off, so it draws a steady
+current. It logs the calibrated VBAT every 10 s, with the time so far on the
+display, and skips the low-battery cutoff. Once three readings in a row are
+at or below the cutoff, it turns the log into a curve: at a constant current the
+charge left falls in step with time, so the voltage at 10 % of the run's
+length is the 90 % point, and so on. The curve is saved in the factory
+partition beside the VBAT calibration (`cfg reset` and the merged image keep
+it), BX Tacho shows CURVE SAVED and goes to deep sleep; plugging in USB wakes
+it in normal mode to charge. A run shorter than 30 minutes isn't saved, and
+plugging in USB during the run cancels it (BX Tacho restarts). `events` logs
+the result. The log is kept in RAM, so a reset during the run loses it.
 
 ## License
 

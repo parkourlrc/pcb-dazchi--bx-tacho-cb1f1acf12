@@ -20,6 +20,7 @@ typedef enum {
     EV_MODE,          // a = new app mode
     EV_BLE_GESTURE,   // a = 1 BLE switched on, 0 off (by the load-sensor gesture)
     EV_LAUNCHER,      // a = launcher_t now in use, b = LOAD_SENSE mV that decided it
+    EV_BATTCAL,       // a = 1 curve saved / 0 not (run too short), b = minutes of discharge
 } ev_type_t;
 
 // Load sample came from a short LED flash (while the RPM channel is armed)

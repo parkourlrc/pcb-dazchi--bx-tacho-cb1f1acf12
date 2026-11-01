@@ -10,7 +10,11 @@
 // Power and charger monitoring
 #define PIN_VBAT_SENSE      GPIO_NUM_0   // ADC1_CH0, VBAT / 2 (R3/R9 470k/470k)
 #define PIN_VUSB_DET        GPIO_NUM_1   // HIGH = USB present, deep-sleep wake source
-#define PIN_CHRG_DET        GPIO_NUM_2   // LOW = charging (TP4054 CHRG, R7 pull-up), strap pin
+// LOW = charging (TP4054 CHRG, R7 pull-up), strap pin. Once charged the TP4054
+// pulls CHRG down weakly (~40 uA measured) rather than letting go: with R7 =
+// 100k (and the charge LED D2/R10) the pin then sits at ~1.67 V and still reads
+// low, so FULL never shows. HARDWARE: R7 must be 4.7k (~3.1 V when charged).
+#define PIN_CHRG_DET        GPIO_NUM_2
 
 // RPM channel (KEY1 + LMV331)
 #define PIN_RPM_SENSE       GPIO_NUM_3   // ADC1_CH3, phototransistor emitter, valid only while powered

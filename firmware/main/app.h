@@ -14,6 +14,7 @@ typedef enum {
     APP_MODE_DIAG,    // console drives the sensors directly
     APP_MODE_METER,   // continuous RPM on the display, for bench tests
     APP_MODE_VBATCAL, // production VBAT calibration: stays awake, no low-battery cutoff
+    APP_MODE_BATTCAL, // battery percentage calibration: a full discharge at a steady load
 } app_mode_t;
 
 // Live readings shown in APP_MODE_VBATCAL
@@ -21,6 +22,20 @@ typedef struct {
     int pin_mv;           // VBAT_SENSE at the ADC pin
     int vbat_mv;          // VBAT with the stored calibration (nominal x2 if none)
 } vbatcal_readings_t;
+
+// Battery percentage calibration (APP_MODE_BATTCAL)
+typedef enum {
+    BATTCAL_WAIT_UNPLUG,  // charged full on USB; the run starts when it's unplugged
+    BATTCAL_RUNNING,      // discharging, VBAT logged
+    BATTCAL_DONE,         // curve saved; deep sleep next
+    BATTCAL_FAILED,       // run too short, nothing saved
+} battcal_phase_t;
+
+typedef struct {
+    battcal_phase_t phase;
+    int vbat_mv;          // latest logged reading
+    uint32_t elapsed_s;   // since the run started
+} battcal_readings_t;
 
 // Live sensor readings shown in APP_MODE_DIAG
 typedef struct {
@@ -52,6 +67,7 @@ typedef struct {
     meter_stats_t meter;      // valid in APP_MODE_METER
     diag_readings_t diag;     // valid in APP_MODE_DIAG
     vbatcal_readings_t vbatcal;   // valid in APP_MODE_VBATCAL
+    battcal_readings_t battcal;   // valid in APP_MODE_BATTCAL
     uint32_t idle_ms;         // time since the last user-visible activity
 } app_snapshot_t;
 
@@ -67,6 +83,7 @@ typedef enum {
     APP_SLEEP_IDLE,       // CONFIG_BXT_DEEP_SLEEP_S without activity
     APP_SLEEP_LOW_BATT,   // below CONFIG_BXT_CUTOFF_BATT_MV
     APP_SLEEP_COMMAND,    // console "sleep"
+    APP_SLEEP_BATTCAL,    // battery percentage calibration finished
 } app_sleep_reason_t;
 
 // Countdown shown before a commanded deep sleep

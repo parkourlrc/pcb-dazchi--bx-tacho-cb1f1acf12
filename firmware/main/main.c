@@ -51,6 +51,15 @@ static const char *TAG = "main";
 #define UI_LIVE_PERIOD_MS  50
 #define DIAG_SAMPLE_MS     100    // live sensor readings on the diag screen
 #define VBATCAL_SAMPLE_MS  250    // live VBAT readings on the calibration screen
+// Battery percentage calibration: a VBAT reading every BATTCAL_SAMPLE_MS until
+// BATTCAL_END_COUNT in a row are at or below BATTCAL_END_MV; shorter runs than
+// BATTCAL_MIN_S aren't saved. The result shows for BATTCAL_SHOW_MS. The run
+// ends at the deep-sleep cutoff, so 0 % means "about to go to sleep".
+#define BATTCAL_SAMPLE_MS  10000
+#define BATTCAL_END_MV     CONFIG_BXT_CUTOFF_BATT_MV
+#define BATTCAL_END_COUNT  3
+#define BATTCAL_MIN_S      1800
+#define BATTCAL_SHOW_MS    5000
 #define SPLASH_MS          1000   // boot screen
 #define CREDIT_MS          1000   // ...then the credit
 
@@ -74,7 +83,8 @@ static volatile app_mode_t s_mode = APP_MODE_RUN;
 static volatile bool s_mode_changed;
 static volatile int64_t s_last_activity_us;
 static esp_pm_lock_handle_t s_usb_pm_lock;
-static esp_pm_lock_handle_t s_cal_pm_lock;    // no light sleep during VBAT calibration
+static esp_pm_lock_handle_t s_cal_pm_lock;    // no light sleep during VBAT and battery calibration
+static esp_pm_lock_handle_t s_battcal_cpu_lock;   // full CPU clock during battery calibration: a steady current
 
 // Deep-sleep hand-off. The UI task owns the display: it draws the countdown
 // and switches the display off, so two tasks never drive the I2C bus at once.
@@ -117,6 +127,7 @@ const char *app_mode_name(app_mode_t mode)
     case APP_MODE_DIAG:  return "diag";
     case APP_MODE_METER: return "meter";
     case APP_MODE_VBATCAL: return "vbat-cal";
+    case APP_MODE_BATTCAL: return "batt-cal";
     default:             return "run";
     }
 }
@@ -266,6 +277,7 @@ static void sensor_task(void *arg)
     int raw_off_mv = 0;
     bool raw_from_flash = false;
     bool cal_lock_held = false;
+    int battcal_low = 0;          // readings in a row at or below BATTCAL_END_MV
     launch_state_t prev_state = launch_get_state();
     launcher_t prev_launcher = load_launcher();   // its RPM threshold is set at boot
     int64_t last_poll_us = 0;
@@ -299,6 +311,7 @@ static void sensor_task(void *arg)
             snap.meter = (meter_stats_t) {0};
             snap.diag = (diag_readings_t) {0};
             snap.vbatcal = (vbatcal_readings_t) {0};
+            snap.battcal = (battcal_readings_t) {.phase = BATTCAL_WAIT_UNPLUG};
             last_poll_us = 0;
             if (mode == APP_MODE_METER) {
                 rpm_power(true);
@@ -306,7 +319,9 @@ static void sensor_task(void *arg)
             }
             // Calibration runs from a supply on J1 with a data-only USB link (no
             // VBUS), so the firmware sees "battery": keep the USB console alive
-            bool want_cal_lock = mode == APP_MODE_VBATCAL;
+            // Battery calibration keeps the chip awake at full clock too: a steady
+            // current, no switching between sleep and wake or clock speeds
+            bool want_cal_lock = mode == APP_MODE_VBATCAL || mode == APP_MODE_BATTCAL;
             if (want_cal_lock != cal_lock_held) {
                 if (want_cal_lock) {
                     esp_pm_lock_acquire(s_cal_pm_lock);
@@ -314,6 +329,15 @@ static void sensor_task(void *arg)
                     esp_pm_lock_release(s_cal_pm_lock);
                 }
                 cal_lock_held = want_cal_lock;
+            }
+            static bool battcal_cpu_held;
+            if ((mode == APP_MODE_BATTCAL) != battcal_cpu_held) {
+                battcal_cpu_held = mode == APP_MODE_BATTCAL;
+                if (battcal_cpu_held) {
+                    esp_pm_lock_acquire(s_battcal_cpu_lock);
+                } else {
+                    esp_pm_lock_release(s_battcal_cpu_lock);
+                }
             }
         }
 
@@ -328,6 +352,48 @@ static void sensor_task(void *arg)
                 snap.vbatcal.vbat_mv = pin >= 0 ? vbat_cal_apply(pin) : -1;
             }
             app_note_activity();   // keep the display on while calibrating
+        } else if (mode == APP_MODE_BATTCAL) {
+            battcal_readings_t *b = &snap.battcal;
+            bool usb_now = battery_usb_present();
+            if (b->phase == BATTCAL_WAIT_UNPLUG && !usb_now) {
+                // Unplugged from the charger: full, and the run starts. Bluetooth
+                // off, so only the steady load is left.
+                bbp_stop();
+                battery_log_begin();
+                battcal_low = 0;
+                b->phase = BATTCAL_RUNNING;
+                last_poll_us = now - BATTCAL_SAMPLE_MS * 1000LL;   // first reading now
+                ESP_LOGI(TAG, "battery calibration: discharge started");
+            } else if (b->phase == BATTCAL_RUNNING && usb_now) {
+                // Plugged in again: it would charge, so the run is spoilt. Restart,
+                // which also brings Bluetooth back.
+                ESP_LOGW(TAG, "battery calibration cancelled: USB plugged in");
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_restart();
+            } else if (b->phase == BATTCAL_RUNNING && now - last_poll_us >= BATTCAL_SAMPLE_MS * 1000LL) {
+                last_poll_us = now;
+                int pin = battery_read_pin_mv(64);
+                if (pin >= 0) {
+                    b->vbat_mv = vbat_cal_apply(pin);
+                    battery_log_add(b->vbat_mv);
+                    battcal_low = b->vbat_mv <= BATTCAL_END_MV ? battcal_low + 1 : 0;
+                }
+                b->elapsed_s = battery_log_elapsed_s();
+                if (battcal_low >= BATTCAL_END_COUNT) {
+                    batt_curve_t curve;
+                    bool ok = b->elapsed_s >= BATTCAL_MIN_S && battery_log_curve(&curve) &&
+                              battery_set_curve(&curve) == ESP_OK;
+                    b->phase = ok ? BATTCAL_DONE : BATTCAL_FAILED;
+                    eventlog_add(EV_BATTCAL, ok, (int)(b->elapsed_s / 60));
+                    ESP_LOGI(TAG, "battery calibration %s after %lu min", ok ? "saved" : "too short",
+                             (unsigned long)(b->elapsed_s / 60));
+                    publish(&snap);
+                    vTaskDelay(pdMS_TO_TICKS(BATTCAL_SHOW_MS));
+                    app_enter_deep_sleep(APP_SLEEP_BATTCAL);
+                    esp_restart();   // USB plugged in during the countdown: start normally
+                }
+            }
+            app_note_activity();   // display on, at constant brightness
         } else if (mode == APP_MODE_DIAG) {
             // Only read the sensors; the console decides what is powered. The
             // percentage is computed directly so the classifier and its baseline
@@ -475,7 +541,8 @@ static void sensor_task(void *arg)
             }
 
             // No cutoff while calibrating: the low calibration points are below it
-            if (!usb && !s_sleep_pending && mode != APP_MODE_VBATCAL && snap.batt.vbat_valid &&
+            if (!usb && !s_sleep_pending && mode != APP_MODE_VBATCAL && mode != APP_MODE_BATTCAL &&
+                snap.batt.vbat_valid &&
                 snap.batt.vbat_mv < CONFIG_BXT_CUTOFF_BATT_MV) {
                 ESP_LOGW(TAG, "battery %d mV below cutoff", snap.batt.vbat_mv);
                 publish(&snap);
@@ -545,6 +612,8 @@ static void draw_status_line(const app_snapshot_t *s)
         left = "METER";
     } else if (s->mode == APP_MODE_VBATCAL) {
         left = "VBAT CAL";
+    } else if (s->mode == APP_MODE_BATTCAL) {
+        left = "BATT CAL";
     } else if (s->state == LAUNCH_EMPTY && !s->load_cal_valid) {
         left = "ARMED";
     } else {
@@ -717,6 +786,42 @@ static void draw_vbatcal_screen(const app_snapshot_t *s)
     display_flush();
 }
 
+// Battery calibration: what to do, then VBAT and the time so far, then the result
+static void draw_battcal_screen(const app_snapshot_t *s)
+{
+    const battcal_readings_t *b = &s->battcal;
+    char line[24];
+
+    display_clear();
+    draw_status_line(s);
+    switch (b->phase) {
+    case BATTCAL_WAIT_UNPLUG:
+        display_text((DISPLAY_W - display_text_width("UNPLUG USB", 2)) / 2, 20, "UNPLUG USB", 2);
+        display_text((DISPLAY_W - display_text_width("TO START", 1)) / 2, 42, "TO START", 1);
+        break;
+    case BATTCAL_RUNNING:
+        display_text(0, 13, "VBAT", 1);
+        snprintf(line, sizeof(line), "TO %d MV", BATTCAL_END_MV);
+        display_text(DISPLAY_W - display_text_width(line, 1), 13, line, 1);
+        if (b->vbat_mv > 0) {
+            draw_value_mv(0, 22, b->vbat_mv);
+        }
+        display_text(0, 39, "TIME", 1);
+        snprintf(line, sizeof(line), "%lu:%02lu", (unsigned long)(b->elapsed_s / 3600),
+                 (unsigned long)(b->elapsed_s / 60 % 60));
+        display_text(0, 48, line, 2);
+        break;
+    case BATTCAL_DONE:
+        display_text((DISPLAY_W - display_text_width("CURVE SAVED", 2)) / 2, 24, "CURVE SAVED", 2);
+        break;
+    case BATTCAL_FAILED:
+        display_text((DISPLAY_W - display_text_width("TOO SHORT", 2)) / 2, 20, "TOO SHORT", 2);
+        display_text((DISPLAY_W - display_text_width("NOT SAVED", 1)) / 2, 42, "NOT SAVED", 1);
+        break;
+    }
+    display_flush();
+}
+
 // "64:E8:33:A1:B2:C5", the Bluetooth address phones see, for the idle screen
 static const char *ble_address_text(void)
 {
@@ -749,6 +854,10 @@ static void draw_screen(const app_snapshot_t *s)
         draw_vbatcal_screen(s);
         return;
     }
+    if (s->mode == APP_MODE_BATTCAL) {
+        draw_battcal_screen(s);
+        return;
+    }
 
     if (s->state == LAUNCH_PULLING) {
         snprintf(big, sizeof(big), "%d", s->live_rpm);
@@ -778,7 +887,8 @@ static void draw_screen(const app_snapshot_t *s)
 static void draw_sleep_countdown(int seconds, app_sleep_reason_t reason)
 {
     static const char *title = "DEEP SLEEP IN";
-    const char *why = reason == APP_SLEEP_LOW_BATT ? "LOW BATTERY" : "SLEEP COMMAND";
+    const char *why = reason == APP_SLEEP_LOW_BATT ? "LOW BATTERY"
+                      : reason == APP_SLEEP_BATTCAL ? "BATT CAL DONE" : "SLEEP COMMAND";
     const char *hint = battery_usb_present() ? "UNPLUG USB NOW" : "PLUG IN USB TO WAKE";
     char big[4];
 
@@ -1056,6 +1166,7 @@ void app_main(void)
     configure_pm(settings_light_sleep());
     ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "usb", &s_usb_pm_lock));
     ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "vbatcal", &s_cal_pm_lock));
+    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "battcal", &s_battcal_cpu_lock));
 
     app_note_activity();
 

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 typedef enum {
@@ -29,3 +30,27 @@ void battery_update(battery_status_t *out);
 // VBAT_SENSE at the ADC pin (VBAT / 2 nominally), averaged; -1 on error
 int battery_read_pin_mv(int samples);
 int battery_percent_from_mv(int mv);
+
+// Battery percentage curve measured by a full discharge at a steady load
+// (cal batt): VBAT at 100, 90, ... 0 %. Kept in the factory partition beside
+// the VBAT calibration. Without one a rough LiPo curve is used.
+#define BATT_CURVE_POINTS   11
+#define BATT_CURVE_STEP_PCT 10
+typedef struct {
+    uint16_t mv[BATT_CURVE_POINTS];   // [0] at 100 %, [BATT_CURVE_POINTS - 1] at 0 %
+    uint32_t duration_s;              // the discharge it came from, full to the end voltage
+} batt_curve_t;
+bool battery_curve(batt_curve_t *out);   // false: none measured, the rough curve is in use
+esp_err_t battery_set_curve(const batt_curve_t *curve);
+esp_err_t battery_clear_curve(void);
+
+// The discharge log behind it: one VBAT reading per period, in RAM. When the
+// buffer fills, neighbouring entries are merged and the period doubles, so a
+// run of any length fits.
+void battery_log_begin(void);
+void battery_log_add(int vbat_mv);
+uint32_t battery_log_elapsed_s(void);
+// With a constant current the charge left falls in step with time, so the
+// voltage at a fraction of the run gives that percentage. False if too few
+// entries.
+bool battery_log_curve(batt_curve_t *out);
