@@ -224,7 +224,7 @@ SCREENS = {
     'ble-gesture-off': ble_gesture(False),
     'update': update(47),
     'update-done': update_done(),
-    'console-code': console_code('482 917'),
+    'console-code': console_code('114 514'),
 }
 
 os.makedirs(OUT, exist_ok=True)

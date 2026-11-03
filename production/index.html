@@ -1,0 +1,930 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Darren Chi -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BX Tacho production</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --surface: #ffffff; --ink: #16181d; --muted: #646a76; --line: #dfe2e8;
+    --wait: #2f5be0; --wait-soft: #e8eefc; --ok: #16834a; --ok-soft: #e3f4ea;
+    --bad: #c2362c; --bad-soft: #fbe7e5; --busy: #b26b00; --busy-soft: #fdf1dc;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111317; --surface: #1a1d22; --ink: #eceef2; --muted: #9aa1ad; --line: #2c3038;
+      --wait: #7c9cff; --wait-soft: #1c2440; --ok: #4fc483; --ok-soft: #16301f;
+      --bad: #ff7b70; --bad-soft: #3a1b18; --busy: #f2b04f; --busy-soft: #3a2a12;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { width: 80%; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 16px; }
+  @media (max-width: 700px) { main { width: 100%; } }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 1.4rem; }
+  .fw { color: var(--muted); font-size: 0.9rem; }
+  .fw code { font-family: var(--mono); }
+  .status { border-radius: 14px; padding: 32px 28px; background: var(--wait-soft); border: 2px solid var(--wait); }
+  .status h2 { margin: 0 0 8px; font-size: 2rem; color: var(--wait); }
+  .status p { margin: 0; color: var(--muted); }
+  .status[data-phase="flashing"], .status[data-phase="identifying"] { background: var(--busy-soft); border-color: var(--busy); }
+  .status[data-phase="flashing"] h2, .status[data-phase="identifying"] h2 { color: var(--busy); }
+  .status[data-phase="done"] { background: var(--ok-soft); border-color: var(--ok); }
+  .status[data-phase="done"] h2 { color: var(--ok); }
+  .status[data-phase="failed"] { background: var(--bad-soft); border-color: var(--bad); }
+  .status[data-phase="failed"] h2 { color: var(--bad); }
+  .status[data-phase="off"] { background: var(--surface); border-color: var(--line); }
+  .status[data-phase="off"] h2 { color: var(--muted); }
+  .start.off { background: none; color: var(--bad); border: 2px solid var(--bad); }
+  .bar { height: 10px; border-radius: 5px; background: var(--line); margin-top: 18px; overflow: hidden; }
+  .bar div { height: 100%; width: 0; background: var(--busy); transition: width 0.2s; }
+  .ids { margin-top: 18px; display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-family: var(--mono); font-size: 1.05rem; }
+  .ids dt { color: var(--muted); font-family: system-ui, sans-serif; }
+  .ids dd { margin: 0; overflow-wrap: anywhere; user-select: all; }
+  .error { margin-top: 14px; font-family: var(--mono); color: var(--bad); overflow-wrap: anywhere; }
+  .counts { display: flex; gap: 12px; flex-wrap: wrap; }
+  .count { flex: 1 1 160px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; }
+  .count b { display: block; font-size: 1.8rem; }
+  .count span { color: var(--muted); font-size: 0.9rem; overflow-wrap: anywhere; }
+  section { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; min-width: 0; }
+  section h3 { margin: 0 0 10px; font-size: 1rem; }
+  .table { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.mono { font-family: var(--mono); }
+  th { color: var(--muted); font-weight: 600; }
+  pre { margin: 0; max-height: 260px; overflow: auto; font: 0.8rem/1.45 var(--mono); color: var(--muted); white-space: pre-wrap; }
+  .offline { color: var(--bad); font-weight: 600; }
+  label { color: var(--muted); font-size: 0.9rem; display: inline-flex; gap: 6px; align-items: center; }
+  .hint { color: var(--busy); font-size: 0.85rem; font-weight: 400; margin-left: 8px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+  .tabs button { font: inherit; font-weight: 600; color: var(--muted); background: none; border: 0;
+    border-bottom: 3px solid transparent; padding: 8px 14px; cursor: pointer; }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--wait); }
+  .tab-error { color: var(--bad); font-size: 0.9rem; min-height: 1.5em; margin: -8px 0 0; }
+  .view { display: grid; gap: 16px; }
+  .view[hidden] { display: none; }
+  .steps { margin: 12px 0 0; padding-left: 1.3em; color: var(--muted); }
+  .start { margin-top: 18px; font: inherit; font-size: 1.15rem; font-weight: 700; padding: 12px 28px;
+    border-radius: 10px; border: 0; background: var(--wait); color: #fff; cursor: pointer; }
+  .start:disabled { opacity: 0.4; cursor: not-allowed; }
+  .ppk { margin-top: 10px; font-size: 0.9rem; color: var(--muted); }
+  .ppk b { color: var(--ok); }
+  .ppk b.no { color: var(--bad); }
+  .results { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .results[hidden], .start[hidden] { display: none; }
+  #cal-message:empty { display: none; }
+  td.pass { color: var(--ok); font-weight: 700; }
+  td.fail { color: var(--bad); font-weight: 700; }
+  .db-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .db-bar input { font: inherit; flex: 1 1 240px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink); }
+  .db-bar a, .db-bar button { font: inherit; font-size: 0.9rem; color: var(--wait); background: none; border: 0;
+    cursor: pointer; padding: 0; text-decoration: underline; }
+  .db-info { color: var(--muted); font-size: 0.9rem; overflow-wrap: anywhere; }
+  .db-mode { color: var(--busy); font-size: 0.9rem; font-weight: 600; }
+  .db-mode:empty { display: none; }
+  #db-table th { cursor: pointer; user-select: none; }
+  #db-table th[aria-sort="ascending"]::after { content: " ▲"; }
+  #db-table th[aria-sort="descending"]::after { content: " ▼"; }
+  #db-table tbody tr { cursor: pointer; }
+  #db-table tbody tr:hover { background: var(--bg); }
+  #db-table tbody tr[aria-selected="true"] { background: var(--wait-soft); }
+  .detail-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .detail-head button { font: inherit; font-size: 0.9rem; color: var(--wait); background: none; border: 0; cursor: pointer; }
+  .detail .ids { margin-top: 0; font-size: 0.95rem; }
+  .detail .results { margin-top: 16px; }
+  .detail .results section { padding: 0; border: 0; }
+  .empty { color: var(--muted); font-size: 0.9rem; }
+  .customer { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px;
+    margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+  .customer label { display: grid; gap: 4px; align-items: stretch; }
+  .customer .wide { grid-column: 1 / -1; }
+  .customer input, .customer textarea { font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; min-width: 0; }
+  .customer textarea { resize: vertical; }
+  .customer .save { display: flex; gap: 12px; align-items: center; }
+  .save-btn { font: inherit; font-weight: 600; padding: 7px 22px; border-radius: 8px; border: 0;
+    background: var(--wait); color: #fff; cursor: pointer; }
+  .save-btn:disabled { opacity: 0.4; cursor: default; }
+  #customer-status { font-size: 0.9rem; color: var(--muted); }
+  #customer-status.bad { color: var(--bad); }
+  .detail-head button.danger { color: var(--bad); }
+  .confirm { border: 2px solid var(--bad); background: var(--bad-soft); border-radius: 10px; padding: 12px 16px;
+    margin-bottom: 16px; display: grid; gap: 10px; }
+  .confirm[hidden] { display: none; }
+  .confirm p { margin: 0; }
+  .confirm label { color: var(--ink); }
+  .confirm input { font: inherit; font-family: var(--mono); text-transform: uppercase; padding: 4px 8px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+  .confirm button { font: inherit; font-size: 0.9rem; font-weight: 600; padding: 6px 16px; border-radius: 8px;
+    border: 1px solid var(--bad); background: var(--surface); color: var(--bad); cursor: pointer; }
+  .confirm button.primary { background: var(--bad); color: #fff; }
+  .confirm button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #db-delete-status { color: var(--bad); font-size: 0.9rem; }
+  .plug { border: 2px solid var(--wait); background: var(--wait-soft); }
+  .plug ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+  .plug li { display: flex; gap: 10px 16px; align-items: center; flex-wrap: wrap; }
+  .plug li span { flex: 1 1 320px; overflow-wrap: anywhere; }
+  .plug li.bad span { color: var(--bad); }
+  .plug code { font-family: var(--mono); }
+  .plug button { font: inherit; font-size: 0.9rem; font-weight: 600; padding: 6px 16px; border-radius: 8px;
+    border: 1px solid var(--wait); background: var(--surface); color: var(--wait); cursor: pointer; }
+  .plug button.primary { background: var(--wait); color: #fff; }
+  td.clip { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>BX Tacho production</h1>
+    <div class="fw" id="fw">Connecting to the flasher…</div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" id="tab-flash" data-mode="flash" aria-selected="true">Flash</button>
+    <button role="tab" id="tab-update" data-mode="update" aria-selected="false">Update</button>
+    <button role="tab" id="tab-cal" data-mode="cal" aria-selected="false">VBAT calibration</button>
+    <button role="tab" id="tab-db" aria-selected="false">Database</button>
+  </nav>
+  <p class="tab-error" id="tab-error"></p>
+
+  <!-- Flash and Update: the same view, worded for the tab -->
+  <div class="view" id="view-flash">
+  <div class="status" id="status" data-phase="waiting">
+    <h2 id="title">Plug in a board</h2>
+    <p id="message">Waiting for an ESP32-C3 on USB</p>
+    <div class="bar" id="bar" hidden><div id="fill"></div></div>
+    <dl class="ids" id="ids" hidden></dl>
+    <div class="error" id="error" hidden></div>
+    <button class="start" id="auto-flash"></button>
+  </div>
+
+  <div class="counts">
+    <div class="count"><b id="session">0</b><span id="session-label">flashed this session</span></div>
+    <div class="count"><b id="total">0</b><span id="csv">flashed in the database</span></div>
+  </div>
+
+  <section>
+    <h3 id="recent-title">Latest flashed</h3>
+    <div class="table">
+      <table>
+        <thead><tr><th>Time</th><th>Serial (MAC)</th><th>Bluetooth</th><th>Unique ID</th><th>Firmware</th>
+          <th id="recent-count">Flashes</th><th id="recent-cal" hidden>VBAT calibration</th></tr></thead>
+        <tbody id="recent"></tbody>
+      </table>
+    </div>
+  </section>
+  </div>
+
+  <div class="view" id="view-cal" hidden>
+    <div class="status" id="cal-status" data-phase="waiting">
+      <h2 id="cal-title">Connect a board</h2>
+      <p id="cal-message"></p>
+      <ol class="steps" id="cal-steps">
+        <li>Clip the PPK2 leads on <b>VBAT+</b> and <b>VBAT-</b> (no battery on the board, power switch on).
+          The PPK2 output stays off until Start.</li>
+        <li>Connect the board with the <b>data-only</b> USB cable.</li>
+        <li>Press Start.</li>
+      </ol>
+      <div class="bar" id="cal-bar" hidden><div id="cal-fill"></div></div>
+      <dl class="ids" id="cal-ids" hidden></dl>
+      <div class="error" id="cal-error" hidden></div>
+      <button class="start" id="cal-start" disabled>Start</button>
+      <div class="ppk" id="ppk"></div>
+    </div>
+
+    <div class="results" id="cal-results" hidden>
+      <section>
+        <h3>Calibration points</h3>
+        <div class="table"><table>
+          <thead><tr><th>VBAT</th><th>Pin</th><th>Uncalibrated</th><th>Fit error</th></tr></thead>
+          <tbody id="cal-points"></tbody>
+        </table></div>
+      </section>
+      <section>
+        <h3>Verification</h3>
+        <div class="table"><table>
+          <thead><tr><th>Actual</th><th>Measured</th><th>Error</th><th></th></tr></thead>
+          <tbody id="cal-verify"></tbody>
+        </table></div>
+      </section>
+    </div>
+
+    <div class="counts">
+      <div class="count"><b id="cal-session">0</b><span>calibrated this session</span></div>
+      <div class="count"><b id="cal-total">0</b><span id="cal-csv">calibrated in the database</span></div>
+    </div>
+
+    <section>
+      <h3>Latest calibrations</h3>
+      <div class="table">
+        <table>
+          <thead><tr><th>Time</th><th>Serial (MAC)</th><th>Unique ID</th><th>Gain</th><th>Offset</th><th>Fit error</th><th>Tries</th><th>Verify</th></tr></thead>
+          <tbody id="cal-recent"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div class="view" id="view-db" hidden>
+    <div class="db-mode" id="db-mode"></div>
+    <section class="plug" id="db-plug" hidden>
+      <h3>Plugged in</h3>
+      <ul id="db-plug-list"></ul>
+    </section>
+    <section>
+      <div class="db-bar">
+        <input type="search" id="db-search" placeholder="Search: customer, contact, notes, unique ID, serial, MAC, firmware, PASS/FAIL…"
+               aria-label="Search the boards">
+        <a href="/db.csv" download>Download CSV</a>
+      </div>
+      <p class="db-info" id="db-info"></p>
+      <div class="table">
+        <table id="db-table">
+          <thead><tr id="db-head"></tr></thead>
+          <tbody id="db-rows"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="detail" id="db-detail" hidden>
+      <div class="detail-head"><h3 id="db-detail-title"></h3>
+        <span><button class="danger" id="db-delete">Delete…</button><button id="db-detail-close">Close</button></span></div>
+      <div class="confirm" id="db-delete-confirm" hidden>
+        <p id="db-delete-text"></p>
+        <label>Type the last 4 characters of its serial (<b id="db-delete-hint"></b>) to confirm
+          <input id="db-delete-input" autocomplete="off" maxlength="4" size="6"></label>
+        <div><button class="danger primary" id="db-delete-yes" disabled>Delete permanently</button>
+          <button id="db-delete-no">Cancel</button> <span id="db-delete-status"></span></div>
+      </div>
+      <form class="customer" id="customer">
+        <label>Customer name <input name="customer_name" autocomplete="off"></label>
+        <label>Contact <input name="customer_contact" autocomplete="off"
+                              placeholder="phone, social media account or email"></label>
+        <label>Warranty since <input name="warranty_since" type="date"></label>
+        <label class="wide">Notes <textarea name="notes" rows="3"></textarea></label>
+        <div class="wide save"><button type="submit" class="save-btn">Save</button>
+          <span id="customer-status"></span></div>
+      </form>
+      <dl class="ids" id="db-detail-ids"></dl>
+      <div class="results" id="db-detail-results" hidden>
+        <section>
+          <h3>Calibration points</h3>
+          <div class="table"><table>
+            <thead><tr><th>VBAT</th><th>Pin</th><th>Uncalibrated</th><th>Fit error</th></tr></thead>
+            <tbody id="db-detail-points"></tbody>
+          </table></div>
+        </section>
+        <section>
+          <h3>Verification</h3>
+          <div class="table"><table>
+            <thead><tr><th>Actual</th><th>Measured</th><th>Error</th><th></th></tr></thead>
+            <tbody id="db-detail-verify"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <section>
+    <h3>Log <label><input type="checkbox" id="sound" checked> sound</label>
+      <span class="hint" id="sound-hint" hidden>click the page to enable</span></h3>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const TITLES = {
+  waiting: 'Plug in a board',
+  flashing: 'Flashing',
+  identifying: 'Reading the IDs',
+  done: 'Done: remove the board',
+  failed: 'Failed: remove the board',
+};
+const CAL_TITLES = {
+  idle: 'Connect a board',
+  running: 'Calibrating',
+  done: 'Done: remove the board',
+  failed: 'Failed: remove the board',
+};
+const CAL_STYLE = { idle: 'waiting', running: 'flashing', done: 'done', failed: 'failed' };
+let lastPhase = null;
+let lastCalPhase = null;
+
+// A short tone when a board is finished or failed, so the operator needn't watch
+// the screen. Browsers keep a page's audio muted until someone has clicked or
+// typed on it, so there's one audio context, unmuted by the first interaction,
+// with a hint beside the sound switch until then.
+let ctx = null;
+function audio() {
+  if (!ctx) {
+    ctx = new AudioContext();
+    ctx.onstatechange = showSoundHint;
+  }
+  return ctx;
+}
+function showSoundHint() {
+  $('sound-hint').hidden = !(ctx && ctx.state === 'suspended' && $('sound').checked);
+}
+for (const ev of ['pointerdown', 'keydown']) {
+  document.addEventListener(ev, () => audio().resume().then(showSoundHint), { capture: true });
+}
+$('sound').addEventListener('change', showSoundHint);
+audio();
+showSoundHint();
+
+function beep(ok) {
+  if (!$('sound').checked) return;
+  try {
+    const ctx = audio();
+    if (ctx.state === 'suspended') ctx.resume();
+    const tones = ok ? [880, 1320] : [330, 220];
+    tones.forEach((f, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.frequency.value = f;
+      g.gain.value = 0.15;
+      o.connect(g).connect(ctx.destination);
+      o.start(ctx.currentTime + i * 0.18);
+      o.stop(ctx.currentTime + i * 0.18 + 0.16);
+    });
+  } catch { /* no audio */ }
+}
+
+function cell(text, mono) {
+  const td = document.createElement('td');
+  td.textContent = text || '';
+  if (mono) td.className = 'mono';
+  return td;
+}
+
+function mv(v) {
+  return v === null || v === undefined ? '' : `${v} mV`;
+}
+function signed(v) {
+  return v === null || v === undefined ? '' : `${v > 0 ? '+' : ''}${v} mV`;
+}
+
+function when(t) {
+  return t ? t.replace('T', ' ') : '';
+}
+function gain(v) {
+  return v === null || v === undefined ? '' : Number(v).toFixed(6);
+}
+function result(v) {
+  const td = cell(v || '');
+  if (v) td.className = v === 'PASS' ? 'pass' : 'fail';
+  return td;
+}
+function fillPoints(tbody, points) {
+  tbody.innerHTML = '';
+  for (const p of points) {
+    const tr = document.createElement('tr');
+    tr.append(cell(mv(p.vbat), true), cell(mv(p.pin), true), cell(signed(p.nominal_err), true), cell(signed(p.fit_err), true));
+    tbody.append(tr);
+  }
+}
+function fillVerify(tbody, verify) {
+  tbody.innerHTML = '';
+  for (const v of verify) {
+    const tr = document.createElement('tr');
+    tr.append(cell(mv(v.actual), true), cell(mv(v.measured), true), cell(signed(v.err), true), result(v.pass ? 'PASS' : 'FAIL'));
+    tbody.append(tr);
+  }
+}
+
+function renderCal(s) {
+  const c = s.cal;
+  $('cal-status').dataset.phase = CAL_STYLE[c.phase] || 'waiting';
+  $('cal-title').textContent = CAL_TITLES[c.phase] || c.phase;
+  $('cal-message').textContent = c.message || '';
+  $('cal-steps').hidden = c.phase !== 'idle';
+  $('cal-bar').hidden = c.phase !== 'running';
+  $('cal-fill').style.width = `${c.progress}%`;
+  $('cal-error').hidden = !(c.phase === 'failed' && c.error);
+  $('cal-error').textContent = c.error || '';
+
+  const btn = $('cal-start');
+  btn.hidden = c.phase === 'running';
+  btn.disabled = !c.ppk2;
+  btn.textContent = c.phase === 'idle' ? 'Start' : 'Start the next board';
+  $('ppk').innerHTML = '';
+  $('ppk').append('PPK2: ', c.ppk2
+    ? Object.assign(document.createElement('b'), { textContent: `connected (${c.ppk2})` })
+    : Object.assign(document.createElement('b'), { textContent: 'not found: connect it over USB', className: 'no' }));
+
+  const r = c.result;
+  const ids = $('cal-ids');
+  ids.innerHTML = '';
+  ids.hidden = !(r && r.ids);
+  if (r && r.ids) {
+    const rows = [['Serial (MAC)', r.ids.serial_mac], ['Unique ID', r.ids.unique_id || 'not programmed on this chip']];
+    if (r.fit) {
+      rows.push(['Gain', r.fit.gain], ['Offset', mv(r.fit.offset_mv)], ['Max fit error', mv(r.fit.max_err_mv)]);
+    }
+    if (r.attempt > 1) rows.push(['Try', `${r.attempt} of 3 (a check failed before)`]);
+    if (c.row) rows.push(['Result', c.row.result]);
+    for (const [label, v] of rows) {
+      ids.append(Object.assign(document.createElement('dt'), { textContent: label }),
+                 Object.assign(document.createElement('dd'), { textContent: v }));
+    }
+  }
+  $('cal-results').hidden = !(r && r.points.length);
+  fillPoints($('cal-points'), r ? r.points : []);
+  fillVerify($('cal-verify'), r ? r.verify : []);
+
+  $('cal-session').textContent = c.session_count;
+  $('cal-total').textContent = c.total_count;
+  $('cal-csv').textContent = `calibrated in ${s.db}`;
+  const body = $('cal-recent');
+  body.innerHTML = '';
+  for (const row of c.recent) {
+    const tr = document.createElement('tr');
+    tr.append(cell(when(row.cal_at)), cell(row.serial_mac, true), cell(row.unique_id, true),
+              cell(gain(row.cal_gain), true), cell(mv(row.cal_offset_mv), true), cell(mv(row.cal_max_fit_error_mv), true),
+              cell(row.cal_attempts ?? ''), result(row.cal_result));
+    body.append(tr);
+  }
+
+  if (lastCalPhase !== null && c.phase !== lastCalPhase && (c.phase === 'done' || c.phase === 'failed')) beep(c.phase === 'done');
+  lastCalPhase = c.phase;
+}
+
+// ---- Database tab: only a view, so the mode (what happens to boards on USB)
+// stays as it was while browsing
+let browsing = false;
+let lastState = null;
+let db = null;           // {db, columns, rows}
+let dbVersion = null;    // the state's db_version db was loaded at
+let dbSort = null;       // {key, dir}; null: the latest change first
+let dbSelected = null;   // unique_id
+const DB_COLS = [
+  ['unique_id', 'Unique ID', true],
+  ['serial_mac', 'Serial (MAC)', true],
+  ['customer_name', 'Customer', false, null, 'clip'],
+  ['customer_contact', 'Contact', false, null, 'clip'],
+  ['warranty_since', 'Warranty since'],
+  ['bt_mac', 'Bluetooth', true],
+  ['flashed_at', 'Flashed', false, when],
+  ['firmware', 'Firmware'],
+  ['flash_count', 'Flashes'],
+  ['fw_update_at', 'Updated', false, when],
+  ['cal_at', 'Calibrated', false, when],
+  ['cal_gain', 'Gain', true, gain],
+  ['cal_offset_mv', 'Offset', true, mv],
+  ['cal_max_fit_error_mv', 'Fit error', true, mv],
+  ['cal_attempts', 'Tries'],
+  ['cal_result', 'VBAT'],
+  ['notes', 'Notes', false, null, 'clip'],
+];
+const DETAIL_LABELS = {
+  unique_id: 'Unique ID', serial_mac: 'Serial (MAC)', bt_mac: 'Bluetooth', chip: 'Chip', flashed_at: 'Flashed',
+  firmware: 'Firmware', firmware_sha256: 'Firmware SHA-256', flash_port: 'Port', flash_count: 'Times flashed',
+  fw_update_at: 'Firmware updated', fw_update_count: 'Times updated',
+  cal_at: 'Calibrated', cal_gain: 'Gain', cal_offset_mv: 'Offset', cal_points: 'Points',
+  cal_max_fit_error_mv: 'Max fit error', cal_verify: 'Checks', cal_result: 'VBAT result',
+  cal_ppk2_offset_mv: 'PPK2 offset', cal_attempts: 'Tries', cal_count: 'Times calibrated', updated_at: 'Last change',
+};
+const DETAIL_FORMAT = {
+  flashed_at: when, fw_update_at: when, cal_at: when, updated_at: when, cal_gain: gain, cal_offset_mv: mv,
+  cal_max_fit_error_mv: mv, cal_ppk2_offset_mv: mv,
+};
+
+let dbLoading = false;
+async function loadDb() {
+  if (dbLoading) return;
+  dbLoading = true;
+  const version = lastState ? lastState.db_version : null;
+  try {
+    const r = await fetch('/db');
+    db = await r.json();
+    dbVersion = version;
+  } catch {
+    $('db-info').textContent = 'Could not read the database: is the tool running?';
+    return;
+  } finally {
+    dbLoading = false;
+  }
+  renderDb();
+}
+
+function renderDb() {
+  if (!db) return;
+  const head = $('db-head');
+  head.innerHTML = '';
+  for (const [key, label] of DB_COLS) {
+    const th = Object.assign(document.createElement('th'), { textContent: label });
+    if (dbSort && dbSort.key === key) th.setAttribute('aria-sort', dbSort.dir > 0 ? 'ascending' : 'descending');
+    th.addEventListener('click', () => {
+      dbSort = dbSort && dbSort.key === key ? (dbSort.dir > 0 ? { key, dir: -1 } : null) : { key, dir: 1 };
+      renderDb();
+    });
+    head.append(th);
+  }
+
+  const words = $('db-search').value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let rows = db.rows.filter((r) => {
+    const text = db.columns.filter((c) => c !== 'cal_detail').map((c) => r[c] ?? '').join(' ').toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
+  if (dbSort) {
+    const { key, dir } = dbSort;
+    rows = [...rows].sort((a, b) => {
+      const x = a[key], y = b[key];
+      if (x === y) return 0;
+      if (x === null || x === undefined) return 1;    // blanks last either way
+      if (y === null || y === undefined) return -1;
+      return (typeof x === 'number' ? x - y : String(x).localeCompare(String(y))) * dir;
+    });
+  }
+
+  const body = $('db-rows');
+  body.innerHTML = '';
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.setAttribute('aria-selected', String(r.unique_id === dbSelected));
+    tr.dataset.uid = r.unique_id;
+    for (const [key, , mono, fmt, cls] of DB_COLS) {
+      const td = key === 'cal_result' ? result(r[key]) : cell(fmt ? fmt(r[key]) : String(r[key] ?? ''), mono);
+      if (cls) {
+        td.classList.add(cls);
+        td.title = r[key] || '';
+      }
+      tr.append(td);
+    }
+    tr.addEventListener('click', () => {
+      dbSelected = dbSelected === r.unique_id ? null : r.unique_id;
+      renderDb();
+    });
+    body.append(tr);
+  }
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    tr.append(Object.assign(cell(db.rows.length ? 'No board matches the search' : 'No boards recorded yet'),
+                            { colSpan: DB_COLS.length, className: 'empty' }));
+    body.append(tr);
+  }
+  const calibrated = db.rows.filter((r) => r.cal_at).length;
+  const failed = db.rows.filter((r) => r.cal_result === 'FAIL').length;
+  $('db-info').textContent = `${words.length ? `${rows.length} of ` : ''}${db.rows.length} boards · `
+    + `${calibrated} calibrated${failed ? ` (${failed} FAIL)` : ''} · ${db.db}`;
+  renderDetail(db.rows.find((r) => r.unique_id === dbSelected));
+}
+
+function renderDetail(r) {
+  if (deleteFor && (!r || r.unique_id !== deleteFor)) closeDelete();   // another board opened
+  $('db-detail').hidden = !r;
+  if (!r) return;
+  $('db-detail-title').textContent = `Board ${r.serial_mac}`;
+  const ids = $('db-detail-ids');
+  ids.innerHTML = '';
+  fillCustomer(r);
+  for (const c of db.columns) {
+    if (c === 'cal_detail' || CUSTOMER.includes(c) || r[c] === null || r[c] === undefined || r[c] === '') continue;
+    const v = DETAIL_FORMAT[c] ? DETAIL_FORMAT[c](r[c]) : String(r[c]);
+    ids.append(Object.assign(document.createElement('dt'), { textContent: DETAIL_LABELS[c] || c }),
+               Object.assign(document.createElement('dd'), { textContent: v }));
+  }
+  let detail = null;
+  try { detail = r.cal_detail ? JSON.parse(r.cal_detail) : null; } catch { /* left out */ }
+  $('db-detail-results').hidden = !(detail && (detail.points.length || detail.verify.length));
+  fillPoints($('db-detail-points'), detail ? detail.points : []);
+  fillVerify($('db-detail-verify'), detail ? detail.verify : []);
+  // Imported from the CSV files of earlier versions: their points weren't kept
+  $('db-detail-points').closest('section').hidden = !(detail && detail.points.length);
+}
+
+// The customer columns: a form, filled when a board is opened (or saved), not
+// on every reload, so a reload while typing doesn't wipe what's typed
+const CUSTOMER = ['customer_name', 'customer_contact', 'warranty_since', 'notes'];
+let customerFor = null;
+let customerDirty = false;
+function fillCustomer(r) {
+  if (r.unique_id === customerFor && customerDirty) return;
+  const form = $('customer');
+  for (const c of CUSTOMER) form.elements[c].value = r[c] || '';
+  if (r.unique_id !== customerFor) $('customer-status').textContent = '';
+  customerFor = r.unique_id;
+  customerDirty = false;
+}
+$('customer').addEventListener('input', () => {
+  customerDirty = true;
+  $('customer-status').textContent = 'not saved';
+  $('customer-status').className = '';
+});
+$('customer').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = $('customer');
+  const body = { unique_id: customerFor };
+  for (const c of CUSTOMER) body[c] = form.elements[c].value;
+  const status = $('customer-status');
+  form.querySelector('button').disabled = true;
+  try {
+    const r = await fetch('/db/board', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                         body: JSON.stringify(body) });
+    const reply = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    if (reply.error) {
+      status.textContent = reply.error;
+      status.className = 'bad';
+    } else {
+      customerDirty = false;
+      status.textContent = `saved ${new Date().toLocaleTimeString()}`;
+      status.className = '';
+      await loadDb();
+    }
+  } catch {
+    status.textContent = 'not saved: is the tool running?';
+    status.className = 'bad';
+  } finally {
+    form.querySelector('button').disabled = false;
+  }
+});
+
+// ---- A board plugged in while the Database tab is open: read its IDs (the
+// server opens its console), select its row, or offer to add it
+const plugged = new Map();   // board key -> {state: reading|known|unknown|error|ignored, port, ids, error}
+
+function handleUsb(usb) {
+  const keys = new Set(usb.map((b) => b.key));
+  for (const k of [...plugged.keys()]) if (!keys.has(k)) plugged.delete(k);   // unplugged
+  for (const b of usb) if (!plugged.has(b.key)) identify(b);
+  renderPlug();
+}
+
+async function identify(b) {
+  // Tried again every second until it answers, the board is unplugged or the
+  // tab is left: right after plugging in its console may not be ready yet
+  const entry = { state: 'reading', port: b.port, tries: 0, error: null };
+  plugged.set(b.key, entry);
+  renderPlug();
+  while (plugged.get(b.key) === entry && browsing) {
+    let reply;
+    try {
+      const r = await fetch('/db/identify', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ key: b.key }) });
+      reply = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    } catch {
+      reply = { error: 'the tool isn\'t running' };
+    }
+    if (plugged.get(b.key) !== entry) return;   // unplugged meanwhile
+    entry.tries += 1;
+    if (!reply.error) {
+      Object.assign(entry, { state: reply.known ? 'known' : 'unknown', ids: reply.ids });
+      if (reply.known) selectBoard(reply.ids.unique_id);
+      renderPlug();
+      return;
+    }
+    entry.error = reply.error;
+    renderPlug();
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+async function addBoard(key, entry) {
+  entry.state = 'adding';
+  renderPlug();
+  const r = await fetch('/db/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                     body: JSON.stringify({ key }) }).catch(() => null);
+  const reply = r ? await r.json().catch(() => ({ error: `HTTP ${r.status}` })) : { error: 'the tool isn\'t running' };
+  if (plugged.get(key) !== entry) return;
+  if (reply.error) {
+    Object.assign(entry, { state: 'error', error: reply.error });
+  } else {
+    entry.state = 'known';
+    await loadDb();
+    selectBoard(reply.unique_id);
+  }
+  renderPlug();
+}
+
+async function selectBoard(uid) {
+  if (!db || !db.rows.some((r) => r.unique_id === uid)) await loadDb();
+  dbSelected = uid;
+  const shown = () => [...$('db-rows').children].find((tr) => tr.dataset.uid === uid);
+  renderDb();
+  if (!shown() && $('db-search').value) {   // hidden by the search: clear it
+    $('db-search').value = '';
+    renderDb();
+  }
+  const tr = shown();
+  if (tr) tr.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function renderPlug() {
+  const list = $('db-plug-list');
+  list.innerHTML = '';
+  const button = (text, onClick, primary) => {
+    const b = Object.assign(document.createElement('button'), { textContent: text, className: primary ? 'primary' : '' });
+    b.addEventListener('click', onClick);
+    return b;
+  };
+  for (const [key, e] of plugged) {
+    if (e.state === 'ignored') continue;
+    const li = document.createElement('li');
+    const text = document.createElement('span');
+    const name = e.ids ? `Board ${e.ids.serial_mac}` : 'A board';
+    const where = ` on ${e.port}`;
+    li.append(text);
+    if (e.state === 'reading') {
+      text.textContent = `${name}${where}: reading its IDs…`
+        + (e.error ? ` (try ${e.tries + 1}; last: ${e.error})` : '');
+    } else if (e.state === 'adding') {
+      text.textContent = `${name}${where}: adding…`;
+    } else if (e.state === 'known') {
+      text.textContent = `${name}${where} is in the database: selected below.`;
+      li.append(button('Show', () => selectBoard(e.ids.unique_id)));
+    } else if (e.state === 'unknown' && !e.ids.unique_id) {
+      li.className = 'bad';
+      text.textContent = `${name}${where} has no eFuse unique ID, so it can't be added.`;
+    } else if (e.state === 'unknown') {
+      text.append(`${name}${where} isn't in the database (unique ID `,
+                  Object.assign(document.createElement('code'), { textContent: e.ids.unique_id }),
+                  `, firmware ${e.ids.firmware || 'unknown'}). Add it?`);
+      li.append(button('Add to the database', () => addBoard(key, e), true),
+                button('Not now', () => { e.state = 'ignored'; renderPlug(); }));
+    } else {
+      li.className = 'bad';
+      text.textContent = `${name}${where}: couldn't read its IDs: ${e.error}`;
+      li.append(button('Try again', () => { plugged.delete(key); handleUsb(lastState ? lastState.usb : []); }));
+    }
+    list.append(li);
+  }
+  $('db-plug').hidden = !list.children.length;
+}
+
+// ---- Deleting a board's row: a second step that names the board and wants
+// the last 4 characters of its serial typed, so a slip of the mouse can't do it
+let deleteFor = null;   // unique_id the confirmation is open for
+function closeDelete() {
+  deleteFor = null;
+  $('db-delete-confirm').hidden = true;
+}
+$('db-delete').addEventListener('click', () => {
+  const r = db && db.rows.find((x) => x.unique_id === dbSelected);
+  if (!r) return;
+  deleteFor = r.unique_id;
+  const extra = [r.customer_name && `customer ${r.customer_name}`, r.cal_at && 'its VBAT calibration record',
+                 r.notes && 'its notes'].filter(Boolean);
+  $('db-delete-text').textContent = `Delete board ${r.serial_mac} (unique ID ${r.unique_id}) from the database`
+    + (extra.length ? `, with ${extra.join(', ')}` : '') + '? This can\'t be undone. The board itself isn\'t changed.';
+  $('db-delete-hint').textContent = r.serial_mac.slice(-4);
+  $('db-delete-input').value = '';
+  $('db-delete-yes').disabled = true;
+  $('db-delete-status').textContent = '';
+  $('db-delete-confirm').hidden = false;
+  $('db-delete-input').focus();
+});
+$('db-delete-input').addEventListener('input', () => {
+  const r = db.rows.find((x) => x.unique_id === deleteFor);
+  $('db-delete-yes').disabled = !r || $('db-delete-input').value.trim().toUpperCase() !== r.serial_mac.slice(-4);
+});
+$('db-delete-no').addEventListener('click', closeDelete);
+$('db-delete-yes').addEventListener('click', async () => {
+  const uid = deleteFor;
+  $('db-delete-yes').disabled = true;
+  const r = await fetch('/db/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ unique_id: uid }) }).catch(() => null);
+  const reply = r ? await r.json().catch(() => ({ error: `HTTP ${r.status}` })) : { error: 'the tool isn\'t running' };
+  if (reply.error) {
+    $('db-delete-status').textContent = `Not deleted: ${reply.error}`;
+    $('db-delete-yes').disabled = false;
+    return;
+  }
+  closeDelete();
+  dbSelected = null;
+  // Still plugged in: offer to add it again
+  for (const e of plugged.values()) if (e.ids && e.ids.unique_id === uid && e.state === 'known') e.state = 'unknown';
+  renderPlug();
+  await loadDb();
+});
+
+$('db-search').addEventListener('input', renderDb);
+$('db-detail-close').addEventListener('click', () => { dbSelected = null; renderDb(); });
+
+function render(s) {
+  lastState = s;
+  for (const mode of ['flash', 'update', 'cal']) {
+    $(`tab-${mode}`).setAttribute('aria-selected', String(!browsing && s.mode === mode));
+  }
+  const upd = s.mode === 'update';
+  $('view-flash').hidden = browsing || !(s.mode === 'flash' || upd);
+  $('view-cal').hidden = browsing || s.mode !== 'cal';
+  $('tab-db').setAttribute('aria-selected', String(browsing));
+  $('view-db').hidden = !browsing;
+  $('db-mode').textContent = !browsing ? ''
+    : s.mode === 'flash' && s.auto_flash
+      ? 'Automatic flashing stays on while you browse: an ESP32-C3 plugged in is still erased and flashed.'
+    : upd && s.auto_flash
+      ? 'Automatic update stays on while you browse: an ESP32-C3 plugged in still gets its firmware updated.'
+    : s.cal.phase === 'running' ? 'A calibration is running (VBAT calibration tab).' : '';
+  if (browsing && s.db_version !== dbVersion) loadDb();
+  if (browsing) handleUsb(s.usb);
+  renderCal(s);
+
+  $('fw').innerHTML = '';
+  $('fw').append('Firmware ', Object.assign(document.createElement('code'), { textContent: s.firmware.version }),
+    ' · SHA-256 ', Object.assign(document.createElement('code'), { textContent: s.firmware.sha256.slice(0, 16) + '…' }));
+
+  const st = $('status');
+  const off = s.phase === 'waiting' && !s.auto_flash;
+  st.dataset.phase = off ? 'off' : s.phase;
+  const what = upd ? 'update' : 'flashing';
+  $('title').textContent = off ? `Automatic ${what} is off`
+    : s.phase === 'flashing' && s.job === 'update' ? 'Updating' : TITLES[s.phase] || s.phase;
+  $('message').textContent = off && upd && s.update_error ? `Updating is unavailable: ${s.update_error}`
+    : off && upd ? 'Boards plugged in are left alone. Turn it on to update the firmware of every ESP32-C3 '
+                   + 'plugged in: settings and VBAT calibration are kept.'
+    : off ? 'Boards plugged in are left alone. Turn it on to erase and flash every ESP32-C3 plugged in.'
+    : s.message + (s.port ? ` (${s.port})` : '');
+  const auto = $('auto-flash');
+  auto.textContent = `Turn automatic ${what} ${s.auto_flash ? 'off' : 'on'}`;
+  auto.classList.toggle('off', s.auto_flash);
+  auto.disabled = upd && !!s.update_error;
+  $('bar').hidden = !(s.phase === 'flashing' || s.phase === 'identifying');
+  $('fill').style.width = `${s.progress}%`;
+
+  const ids = $('ids');
+  ids.hidden = !(s.phase === 'done' && s.record);
+  ids.innerHTML = '';
+  if (s.phase === 'done' && s.record) {
+    for (const [k, label] of [['serial_mac', 'Serial (MAC)'], ['bt_mac', 'Bluetooth'], ['unique_id', 'Unique ID'], ['note', 'Note']]) {
+      const v = s.record[k] || (k === 'unique_id' ? 'not programmed on this chip' : '');
+      if (!v) continue;
+      ids.append(Object.assign(document.createElement('dt'), { textContent: label }),
+                 Object.assign(document.createElement('dd'), { textContent: v }));
+    }
+  }
+  $('error').hidden = s.phase !== 'failed';
+  $('error').textContent = s.error || '';
+
+  $('session').textContent = upd ? s.update_session_count : s.session_count;
+  $('session-label').textContent = `${upd ? 'updated' : 'flashed'} this session`;
+  $('total').textContent = upd ? s.update_total_count : s.total_count;
+  $('csv').textContent = `${upd ? 'updated' : 'flashed'} in ${s.db}`;
+  $('recent-title').textContent = upd ? 'Latest updated' : 'Latest flashed';
+  $('recent-count').textContent = upd ? 'Updates' : 'Flashes';
+  $('recent-cal').hidden = !upd;
+
+  const body = $('recent');
+  body.innerHTML = '';
+  for (const r of upd ? s.update_recent : s.recent) {
+    const tr = document.createElement('tr');
+    tr.append(cell(when(upd ? r.fw_update_at : r.flashed_at)), cell(r.serial_mac, true), cell(r.bt_mac, true),
+              cell(r.unique_id, true), cell(r.firmware), cell(String(upd ? r.fw_update_count : r.flash_count)));
+    if (upd) tr.append(r.cal_result ? result(r.cal_result) : cell('none'));
+    body.append(tr);
+  }
+
+  const log = $('log');
+  const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+  log.textContent = s.log.join('\n');
+  if (atEnd) log.scrollTop = log.scrollHeight;
+
+  if (lastPhase !== null && s.phase !== lastPhase && (s.phase === 'done' || s.phase === 'failed')) beep(s.phase === 'done');
+  lastPhase = s.phase;
+}
+
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify(body || {}) });
+    const reply = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    $('tab-error').textContent = reply.error || '';
+  } catch {
+    $('tab-error').textContent = 'The tool isn\'t running';
+  }
+}
+for (const tab of document.querySelectorAll('.tabs button[data-mode]')) {
+  tab.addEventListener('click', async () => {
+    if (!browsing && lastState && lastState.mode === tab.dataset.mode) return;   // already on it
+    // Switching to Flash always turns automatic flashing off (the server does)
+    await post('/mode', { mode: tab.dataset.mode });
+    if (browsing && !$('tab-error').textContent) {
+      browsing = false;
+      if (lastState) render(lastState);
+    }
+  });
+}
+$('tab-db').addEventListener('click', () => {
+  if (!browsing) plugged.clear();   // boards already on USB are looked up again
+  browsing = true;
+  $('tab-error').textContent = '';
+  if (lastState) render(lastState);
+  loadDb();
+});
+$('cal-start').addEventListener('click', () => post('/cal/start'));
+$('auto-flash').addEventListener('click', () => post('/flash/auto', { on: !(lastState && lastState.auto_flash) }));
+
+const events = new EventSource('/events');
+events.onmessage = (e) => render(JSON.parse(e.data));
+events.onerror = () => {
+  $('fw').innerHTML = '<span class="offline">The flasher isn\'t running: start bx_production.py</span>';
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Downloaded release images and the production records stay on the flashing PC
+firmware/
+records.csv
+vbat_cal.csv
+*.tmp
+__pycache__/
+production.db
+production.db-*

@@ -1,0 +1,178 @@
+# BX Tacho production flasher
+
+Flashes boards one after another and records their IDs. For each ESP32-C3
+plugged in over USB it:
+
+1. **erases the whole chip** and writes the merged firmware image at 0x0
+   (bootloader, partition table, `otadata` and app), with esptool;
+2. lets the new firmware start and asks its console for `id`: the factory MAC
+   (the serial number), the Bluetooth MAC and the eFuse unique ID (on chips
+   that have one), checking the MAC against what esptool read;
+3. records them in the production database `production.db` (in the current
+   folder) and asks for the board to be removed. The next
+   board is only taken once this one is unplugged, so none is flashed twice by
+   accident.
+
+A local web page shows each step in large type, with a tone when a board is
+done or has failed, the count and the latest records.
+
+## Use
+
+From an ESP-IDF terminal (it has esptool and pyserial), or after
+`pip install -r requirements.txt`:
+
+```
+python bx_production.py
+```
+
+The page opens at http://127.0.0.1:8765/. **Automatic flashing is off** at
+start and every time the Flash tab is opened (from the VBAT calibration or
+Database tab), so a board plugged in
+is left alone: press **Turn automatic flashing on** with no board on USB (it
+refuses otherwise), then plug in a board; when it says **Done: remove the
+board**, unplug it and plug in the next. Turn it off before plugging in a
+board you want to keep as it is.
+
+- **Firmware:** by default the merged image of the latest GitHub release
+  (asked from GitHub at each start; without internet, the newest release
+  downloaded before), downloaded once into `firmware/<tag>/` and checked
+  against the release's
+  `SHA256SUMS.txt`. `--release v2.5.0` picks another release; `--firmware
+  file.bin` flashes a local merged image (no check). The page shows the
+  version and SHA-256 being flashed.
+- **Records:** see [Database](#database) below. A board flashed again
+  updates its row (flash count up by one) and loses its calibration there,
+  since erasing the chip erased it.
+- **Failures** (esptool error, firmware not answering, MAC mismatch) show in
+  red with the reason; nothing is recorded. Unplug the board and plug it in
+  again to start over. The log at the bottom has esptool's output.
+- `--identify-only` records the IDs of boards that already run the firmware,
+  without erasing or flashing them.
+
+**Careful:** while automatic flashing is on, every ESP32-C3 plugged into this PC is erased,
+including the factory partition with the battery calibration. Calibrate
+(`cal vbat`, `cal batt`) after flashing, and don't plug in a board you want to
+keep as it is.
+
+If a blank chip isn't put into download mode automatically, hold BOOT while
+plugging it in.
+
+## Firmware update
+
+The **Update** tab works like Flash, but only updates the firmware: settings,
+shot history and the VBAT calibration stay. It writes two parts of the same
+release image, without erasing the chip:
+
+- `0x0`-`0x9000`: the bootloader and the partition table;
+- `0x10000`-`0x110000`: the `ota_0` app slot and a blank `otadata`, so the new
+  app boots also on a board that last ran `ota_1` after a Bluetooth update.
+
+`nvs` and `phy_init` (`0x9000`-`0x10000`) and `fctry` (from `0x110000`, the
+calibration) aren't touched. This is the same set the web app's USB update
+writes, so a board that still has the older single-app partition table is
+moved to the current one too.
+
+Automatic update is off whenever the tab is opened, like automatic flashing;
+turn it on with no board on USB, then plug in the boards. Each update goes to
+the board's row (`fw_update_at`, `fw_update_count`, `firmware`), and the page
+shows whether a calibration is recorded for it. If the image isn't laid out
+as above (a `--firmware` file of another kind), updating is unavailable and
+the tab says why.
+
+## VBAT calibration
+
+The **VBAT calibration** tab calibrates the battery voltage reading with a
+Nordic Power Profiler Kit II as the supply. In this tab nothing is flashed;
+the tab can only be changed while no board is being flashed or calibrated.
+Opening it turns automatic flashing off, so going back to Flash flashes
+nothing until it is turned on again.
+
+1. Connect the PPK2 over USB (the page shows it as connected). Its output
+   leads go to the test clip.
+2. Clip on the board's **VBAT+** and **VBAT-** (no battery, power switch on)
+   and connect it with a **data-only** USB cable: with USB power the charger
+   would drive VBAT.
+3. Press **Start**. The tool then:
+   - switches the PPK2 to source mode at 3600 mV and turns its output on;
+   - waits for the board on USB, reads its IDs (`id`);
+   - `ble off` (a steady current) and waits for the restart;
+   - `cal vbat start`, then `cal vbat point` at 3200, 3400, 3600, 3800, 4000
+     and 4200 mV, setting the PPK2 for each;
+   - `cal vbat save` (the line fit). If the firmware rejects the fit ("Not
+     saved: ..."), the calibration starts over from `cal vbat start`; this
+     shares the 3 tries with failed checks below, and a third rejection ends
+     the run as failed, with nothing recorded;
+   - `cal vbat verify` at one random voltage between each two points (5 in
+     all; `--verify-per-segment N` for more), each must be within ±10 mV.
+     The first failed check ends the checks and the calibration starts over
+     from `cal vbat start` (new points, new fit), up to 3 tries in all; after
+     the third the board is recorded as FAIL;
+   - `cal vbat stop`, `ble on`, waits for the restart, checks Bluetooth is
+     on, and turns the PPK2 off. Bluetooth is turned back on after a failure
+     too.
+4. **Done: remove the board** shows the fit, each point and each check.
+   Unclip it, connect the next and press **Start the next board**.
+
+Results go to the board's row in the [database](#database), replacing an
+earlier calibration of it. A board whose check failed is recorded with
+`cal_result` FAIL, and the page shows it in red.
+
+**Accuracy:** the PPK2's set voltage is taken as the true voltage, so the
+calibration is only as good as the PPK2 and the clip leads. Check it once with
+a good multimeter at the clip while a board is on it (in `cal vbat` mode); if
+the board sees, say, 6 mV less than the setting, start the tool with
+`--ppk2-offset-mv -6`.
+
+## Database
+
+Everything goes to one SQLite file, `production.db` in the folder you run the
+tool from (`--db path` for another), table `boards`, one row per board with
+the chip's eFuse **unique ID** as the primary key. A chip without one can't be
+recorded: it fails with that reason (all ESP32-C3 v0.4 have one).
+
+| Columns | |
+|---|---|
+| `unique_id`, `serial_mac`, `bt_mac`, `chip` | the IDs from `id`; `serial_mac` is the serial number |
+| `flashed_at`, `flash_count` | the last full flash (erase and merged image), and how many there were |
+| `fw_update_at`, `fw_update_count` | the last firmware update (Update tab), and how many there were |
+| `firmware`, `firmware_sha256`, `flash_port` | what the last flash or update wrote, and where |
+| `cal_at`, `cal_gain`, `cal_offset_mv`, `cal_points`, `cal_max_fit_error_mv`, `cal_result`, `cal_ppk2_offset_mv`, `cal_attempts` | the VBAT calibration (empty again after a flash) |
+| `cal_verify`, `cal_detail` | the checks as `actual:error; ...`, and the points and checks as JSON |
+| `cal_count` | calibrations so far |
+| `customer_name`, `customer_contact`, `warranty_since`, `notes` | entered by hand on the Database tab; kept when the board is flashed or calibrated again. `warranty_since` is a date (YYYY-MM-DD) |
+| `updated_at` | the last change |
+
+The **Database** tab lists the boards: search (every word must match
+somewhere, e.g. `FAIL`, part of a MAC or a customer's name), click a column
+to sort, click a row for all its fields with its calibration points and
+checks, and a form for its customer, contact, warranty date and notes (**Save**
+writes them). A database made before these columns existed gets them added
+when the tool starts. **Download CSV**
+exports the table. The tab only shows data: the mode stays as it was, so with
+automatic flashing (or update) on, a board plugged in meanwhile is still
+written.
+
+**Delete…** in a board's details removes its row, after a second step that
+names the board (and what goes with it: customer, calibration, notes) and
+wants the last 4 characters of its serial typed. It can't be undone; the row
+as it was goes to the log on the page, as the only trace. The board itself
+isn't changed.
+
+**Plugging in a board** while the tab is open looks it up: once its USB port
+has settled, the tool reads its IDs from the firmware console (`id`). A board
+in the database gets its row selected (clearing the search if it hid it); one
+that isn't is offered with **Add to the database** (its IDs, and the firmware
+version it runs, from `status`), or **Not now**. Until a board answers, it is tried again every second (showing the
+last reason: its console still starting, no firmware on it, automatic
+flashing or update on), for as long as it stays plugged in and the tab stays
+open. Several boards plugged in at once are read one after another.
+
+Records from the CSV files of earlier versions are imported into a new
+database with
+
+```
+python boarddb.py import records.csv vbat_cal.csv
+```
+
+in time order, so a flash after a calibration clears it as above. Their
+calibration points weren't kept, only the checks.

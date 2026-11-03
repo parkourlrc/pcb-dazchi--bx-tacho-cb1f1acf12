@@ -111,7 +111,7 @@ try:
                 const dlg = document.getElementById('code-dialog');
                 dlg.showModal();
                 const input = document.getElementById('code-input');
-                input.value = '482 917';
+                input.value = '114 514';
                 input.dispatchEvent(new Event('input'));
                 input.blur();
             ''')
