@@ -21,7 +21,9 @@ import io
 import datetime
 import hashlib
 import json
+import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -81,6 +83,58 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+def version_key(tag):
+    """v2.10.0 after v2.9.1: the numbers, compared as numbers"""
+    return tuple(int(n) for n in re.findall(r'\d+', tag))
+
+
+# A release's merged image: bx-tacho-v2.4.0-merged.bin (bx-tacho-merged.bin in v1.1.0)
+RE_MERGED = re.compile(r'^bx-tacho(-v[^/]+)?-merged\.bin$')
+RELEASES_CACHE_S = 120   # GitHub allows 60 unauthenticated API requests an hour
+_releases = {'at': 0.0, 'list': None}
+
+
+def list_releases():
+    """The firmware releases, newest version first: [{tag, asset, published,
+    latest, downloaded}], and an error (offline: only the ones downloaded before)"""
+    if _releases['list'] is not None and time.time() - _releases['at'] < RELEASES_CACHE_S:
+        out, error = [dict(r) for r in _releases['list']], None
+    else:
+        out, error = _ask_releases()
+    for r in out:   # now, not when GitHub was asked
+        r['downloaded'] = (HERE / 'firmware' / r['tag'] / r['asset']).exists()
+    return out, error
+
+
+def _ask_releases():
+    try:
+        req = urllib.request.Request(f'https://api.github.com/repos/{REPO}/releases?per_page=100',
+                                     headers={'Accept': 'application/vnd.github+json'})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.load(r)
+        out = []
+        for rel in data:
+            merged = [a['name'] for a in rel.get('assets', []) if RE_MERGED.match(a['name'])]
+            if rel.get('draft') or not merged:
+                continue   # hardware releases have no firmware
+            out.append({'tag': rel['tag_name'], 'asset': merged[0], 'published': (rel.get('published_at') or '')[:10],
+                        'prerelease': bool(rel.get('prerelease'))})
+        error = None
+    except (OSError, ValueError, KeyError) as e:
+        out, error = [], f'could not ask GitHub for the releases ({e}): showing the ones downloaded before'
+        for folder in (HERE / 'firmware').glob('v*'):
+            merged = [f.name for f in folder.glob('*.bin') if RE_MERGED.match(f.name)]
+            if merged:
+                out.append({'tag': folder.name, 'asset': merged[0], 'published': '', 'prerelease': False})
+    out.sort(key=lambda r: version_key(r['tag']), reverse=True)
+    stable = [r for r in out if not r['prerelease']]
+    for r in out:
+        r['latest'] = bool(stable) and r is stable[0]
+    if error is None:
+        _releases.update(at=time.time(), list=[dict(r) for r in out])
+    return out, error
+
+
 def latest_release():
     """The tag of the latest GitHub release; offline, the newest one downloaded before"""
     try:
@@ -89,9 +143,7 @@ def latest_release():
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.load(r)['tag_name']
     except (OSError, ValueError, KeyError) as e:
-        def version(tag):
-            return tuple(int(n) if n.isdigit() else 0 for n in tag.lstrip('v').split('.'))
-        have = sorted((p.name for p in (HERE / 'firmware').glob('v*') if p.is_dir()), key=version)
+        have = sorted((p.name for p in (HERE / 'firmware').glob('v*') if p.is_dir()), key=version_key)
         if not have:
             sys.exit(f'could not ask GitHub for the latest release ({e}) and none is downloaded: '
                      'use --release vX.Y.Z or --firmware file.bin')
@@ -99,10 +151,13 @@ def latest_release():
         return have[-1]
 
 
-def fetch_release(tag):
-    """The merged image of a GitHub release, downloaded once into firmware/<tag>/
-    and checked against the release's SHA256SUMS.txt."""
-    name = f'bx-tacho-{tag}-merged.bin'
+def fetch_release(tag, name=None):
+    """The merged image of a GitHub release (`name`, by default
+    bx-tacho-<tag>-merged.bin), downloaded once into firmware/<tag>/ and
+    checked against the release's SHA256SUMS.txt. Raises RuntimeError."""
+    if not re.fullmatch(r'[\w.+-]+', tag) or (name and not RE_MERGED.match(name)):
+        raise RuntimeError(f'not a release: {tag} {name or ""}')
+    name = name or f'bx-tacho-{tag}-merged.bin'
     folder = HERE / 'firmware' / tag
     folder.mkdir(parents=True, exist_ok=True)
     base = f'https://github.com/{REPO}/releases/download/{tag}'
@@ -111,20 +166,56 @@ def fetch_release(tag):
     for file, path in (('SHA256SUMS.txt', sums_path), (name, image)):
         if not path.exists():
             print(f'downloading {base}/{file}')
-            with urllib.request.urlopen(f'{base}/{file}', timeout=60) as r:
-                path.write_bytes(r.read())
+            try:
+                with urllib.request.urlopen(f'{base}/{file}', timeout=60) as r:
+                    data = r.read()
+            except OSError as e:
+                raise RuntimeError(f'could not download {file} of {tag}: {e}') from None
+            tmp = path.with_name(path.name + '.tmp')
+            tmp.write_bytes(data)
+            os.replace(tmp, path)   # never a half-downloaded file under the real name
     sums = {}
     for line in sums_path.read_text().splitlines():
         parts = line.split()
         if len(parts) == 2:
             sums[parts[1].lstrip('*')] = parts[0].lower()
     if name not in sums:
-        sys.exit(f'{name} is not listed in the release\'s SHA256SUMS.txt')
+        raise RuntimeError(f'{name} is not listed in the release\'s SHA256SUMS.txt')
     actual = sha256_file(image)
     if actual != sums[name]:
         image.unlink()
-        sys.exit(f'{name}: checksum mismatch (deleted, run again to download it again)')
+        raise RuntimeError(f'{name}: checksum mismatch (deleted: choose it again to download it again)')
     return image, tag
+
+
+def image_version(data):
+    """The app version in a merged image (the ESP-IDF app description at
+    0x10020, after the image and first segment headers), e.g. 'v2.4.0', or None"""
+    at = 0x10000 + 24 + 8
+    if len(data) < at + 48 or struct.unpack_from('<I', data, at)[0] != 0xABCD5432:
+        return None
+    return 'v' + data[at + 16:at + 48].split(b'\0')[0].decode('ascii', 'replace')
+
+
+def check_merged(data):
+    """Raises ValueError unless `data` looks like a merged image (bootloader
+    at 0x0, partition table at 0x8000, an app with its description at 0x10000)"""
+    if len(data) < 0x10100 or data[0] != 0xE9 or data[0x8000:0x8002] != b'\xaa\x50' or data[0x10000] != 0xE9:
+        raise ValueError('not a merged image (bootloader at 0x0, partition table at 0x8000, app at 0x10000): '
+                         'use bx-tacho-vX.Y.Z-merged.bin')
+    if image_version(data) is None:
+        raise ValueError('no ESP-IDF app description at 0x10000: not a BX Tacho firmware image')
+
+
+def load_firmware(image, version, source, label):
+    """Everything the worker needs about an image: {image, version, sha,
+    source (release | local | file), label, updates, update_error}"""
+    fw = {'image': Path(image), 'version': version, 'sha': sha256_file(image), 'source': source, 'label': label}
+    try:
+        fw['updates'], fw['update_error'] = update_parts(image), None
+    except ValueError as e:
+        fw['updates'], fw['update_error'] = None, str(e)
+    return fw
 
 
 def update_parts(image):
@@ -150,14 +241,21 @@ def update_parts(image):
 
 # ---------------------------------------------------------------- state shared with the web page
 
+def fw_public(fw):
+    return {'file': str(fw['image']), 'version': fw['version'], 'sha256': fw['sha'], 'source': fw['source'],
+            'label': fw['label']}
+
+
 class State:
-    def __init__(self, firmware, version, sha, db_path, update_error=None):
+    def __init__(self, fw, db_path):
         self.lock = threading.Condition()   # an RLock: update() may be called with it held
         self.seq = 0
         self.cal_start = threading.Event()
         self.identifying = False   # the Database tab is reading a board's IDs (its console is open)
         self.identify_lock = threading.Lock()
         self.identified = {}       # board key -> IDs read for the Database tab, for adding it
+        self.fw = fw            # load_firmware(): what's flashed; changed with set_firmware
+        self.fw_lock = threading.Lock()   # one firmware download or upload at a time
         self.data = {
             # flash: every ESP32-C3 plugged in is erased and flashed; update: its
             # firmware is updated, settings and calibration kept; cal: VBAT
@@ -168,7 +266,8 @@ class State:
             # updated by accident. Off at start and whenever a tab is opened.
             'auto_flash': False,
             'job': 'flash',          # flash | update: what happens to the current (last) board
-            'update_error': update_error,   # why updating is unavailable, or None
+            'update_error': fw['update_error'],   # why updating is unavailable, or None
+            'fw_busy': None,         # what's being done to change the firmware (downloading ...)
             'cal': {
                 'phase': 'idle',     # idle | running | done | failed
                 'message': '',
@@ -187,7 +286,7 @@ class State:
             'port': None,
             'record': None,
             'error': None,
-            'firmware': {'file': str(firmware), 'version': version, 'sha256': sha},
+            'firmware': fw_public(fw),
             'db': str(db_path),
             'db_version': 0,         # changes on every save, for the Database tab to reload
             'session_count': 0,
@@ -357,6 +456,27 @@ ID_PATTERNS = {
     'chip': re.compile(r'chip\s*:\s*(ESP32-C3 revision v[\d.]+)'),
 }
 RE_FIRMWARE = re.compile(r'firmware\s*:\s*\S+ (v[^\s,]+)')   # in `status`
+# Also in `status`: the battery percentage curve, and per launcher the load
+# calibration and RPM threshold
+RE_BATT_CURVE = re.compile(r'^batt curve\s*:\s*(.+?)\s*$', re.M)
+RE_LAUNCHER_CAL = re.compile(r'^cal (black|white)\s*:\s*(?:load empty (-?\d+) mV, loaded (-?\d+) mV|load not calibrated)'
+                             r'; rpm threshold (\d+) mV', re.M)
+
+
+def parse_board_state(text):
+    """The boarddb.BOARD_COLUMNS that `status` shows (an older firmware shows
+    fewer: those left out stay as they are in the database)"""
+    st = {}
+    m = RE_BATT_CURVE.search(text)
+    if m:
+        curve = re.sub(r"\s*\('cal batt [^)]*\)", '', m.group(1))   # without the hint
+        st['batt_cal'] = 1 if curve.startswith('measured') else 0
+        st['batt_curve'] = curve
+    for launcher, empty, loaded, thr in RE_LAUNCHER_CAL.findall(text):
+        st[f'{launcher}_load_empty_mv'] = int(empty) if empty else None
+        st[f'{launcher}_load_loaded_mv'] = int(loaded) if loaded else None
+        st[f'{launcher}_rpm_thr_mv'] = int(thr)
+    return st
 
 
 def _read_for(s, seconds, until=None):
@@ -455,9 +575,9 @@ def read_ids(state, port):
     raise RuntimeError('the firmware did not answer `id` (did it start?)')
 
 
-def worker(state, image, version, sha, db_path, identify_only, updates):
-    """Flash or update each board plugged in. `updates`: the parts an update
-    writes (update_parts), or None if updating is unavailable."""
+def worker(state, db_path, identify_only):
+    """Flash or update each board plugged in, with the firmware chosen when
+    it was plugged in (state.fw)"""
     session = {'flash': 0, 'update': 0}
     while True:
         # ---- wait for a board
@@ -468,6 +588,8 @@ def worker(state, image, version, sha, db_path, identify_only, updates):
             # boards being calibrated are on USB too and must not be erased
             with state.lock:
                 job = state.data['mode']
+                fw = state.fw
+                image, version, sha, updates = fw['image'], fw['version'], fw['sha'], fw['updates']
                 if state.data['auto_flash'] and (job == 'flash' or (job == 'update' and updates)):
                     ports = esp_ports()
                     board = ports[0] if ports else None
@@ -625,8 +747,10 @@ def identify_board(state, db_path, key):
             if not con.wait_prompt(3.0):
                 raise ValueError('no prompt from its console (still starting, or no firmware on it)')
             text = con.cmd('id')
-            # The version it runs ("firmware    : bx-tacho v2.4.0, ESP-IDF ..."), for adding it
-            version = RE_FIRMWARE.search(con.cmd('status')) if ID_PATTERNS['serial_mac'].search(text) else None
+            # The version it runs ("firmware    : bx-tacho v2.4.0, ESP-IDF ..."), for adding it,
+            # and its battery curve and launcher calibrations, for its row
+            status = con.cmd('status') if ID_PATTERNS['serial_mac'].search(text) else ''
+            version = RE_FIRMWARE.search(status)
         except serial.SerialException as e:
             raise ValueError(f'its port could not be opened ({e})') from None
         finally:
@@ -638,16 +762,31 @@ def identify_board(state, db_path, key):
         ids['firmware'] = version.group(1) if version else None
         if ids['unique_id'] in (None, 'not programmed'):
             ids['unique_id'] = ''
+        board_state = parse_board_state(status)
         with state.lock:
-            state.identified[key] = ids
-        known = bool(ids['unique_id']) and boarddb.get(db_path, ids['unique_id']) is not None
+            state.identified[key] = (ids, board_state)
+        # A board in the database gets what it says now (written on adding it otherwise)
+        known = bool(ids['unique_id']) and boarddb.save_board_state(db_path, ids['unique_id'], board_state)
+        if known:
+            refresh_counts(state, db_path)
         state.log(f'database: board {ids["serial_mac"]} on {p.device} '
-                  + ('is recorded' if known else 'is not in the database'))
+                  + (f'is recorded; {describe_board_state(board_state)}' if known else 'is not in the database'))
         return ids, known
     finally:
         with state.lock:
             state.identifying = False
         state.identify_lock.release()
+
+
+def describe_board_state(st):
+    """For the log: 'batt curve measured, ...; black load 120/860 mV, rpm 1400 mV; ...'"""
+    parts = [f'batt curve {st["batt_curve"]}'] if 'batt_curve' in st else []
+    for l in ('black', 'white'):
+        if f'{l}_rpm_thr_mv' in st:
+            load = (f'{st[l + "_load_empty_mv"]}/{st[l + "_load_loaded_mv"]} mV'
+                    if st[l + '_load_empty_mv'] is not None else 'not calibrated')
+            parts.append(f'{l} load {load}, rpm threshold {st[l + "_rpm_thr_mv"]} mV')
+    return '; '.join(parts) or 'no calibration shown by its firmware'
 
 
 def ppk2_watcher(state):
@@ -687,6 +826,71 @@ def cal_worker(state, db_path, ppk2_offset_mv, verify_per_segment):
             state.update_cal(phase='failed', message='Remove the board (clip and USB cable)', error=str(e))
 
 
+def set_firmware(state, load):
+    """Change the firmware to load() (it downloads or checks the image: it may
+    take a while). Returns None, or why it can't change now."""
+    def busy():
+        if state.data['auto_flash']:
+            return 'turn automatic flashing or update off first'
+        if state.data['phase'] in ('flashing', 'identifying'):
+            return 'wait for the board being written'
+        return None
+    with state.lock:
+        why = busy()
+    if why:
+        return why
+    if not state.fw_lock.acquire(blocking=False):
+        return 'another firmware is being loaded'
+    try:
+        try:
+            fw = load()
+        except (RuntimeError, ValueError, OSError) as e:
+            return str(e)
+        with state.lock:
+            why = busy()   # turned on meanwhile
+            if why:
+                return why
+            state.fw = fw
+            state.update(firmware=fw_public(fw), update_error=fw['update_error'])
+        state.log(f'firmware: {fw["version"]} ({fw["label"]}), SHA-256 {fw["sha"]}'
+                  + (f'; updating unavailable: {fw["update_error"]}' if fw['update_error'] else ''))
+        return None
+    finally:
+        state.update(fw_busy=None)
+        state.fw_lock.release()
+
+
+def select_release(state, tag):
+    releases, _ = list_releases()
+    rel = next((r for r in releases if r['tag'] == tag), None)
+    if rel is None:
+        return f'no firmware release {tag}'
+
+    def load():
+        state.update(fw_busy=f'Downloading {tag}' if not rel['downloaded'] else f'Checking {tag}')
+        image, _ = fetch_release(tag, rel['asset'])
+        return load_firmware(image, tag, 'release', f'GitHub release {tag}')
+    return set_firmware(state, load)
+
+
+MAX_UPLOAD = 4 << 20
+
+
+def select_local(state, filename, data):
+    """A merged image chosen on the PC, kept in firmware/local/"""
+    def load():
+        state.update(fw_busy=f'Checking {filename}')
+        check_merged(data)
+        version = image_version(data)
+        name = re.sub(r'[^\w.+-]', '_', Path(filename).name)[-80:] or 'image.bin'
+        folder = HERE / 'firmware' / 'local'
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f'{hashlib.sha256(data).hexdigest()[:12]}-{name}'
+        path.write_bytes(data)
+        return load_firmware(path, f'{version} (local)', 'local', f'local file {Path(filename).name}')
+    return set_firmware(state, load)
+
+
 MODE_NAMES = {'flash': 'flash', 'update': 'firmware update', 'cal': 'VBAT calibration'}
 
 
@@ -714,6 +918,8 @@ def set_mode(state, mode):
 def set_auto_flash(state, on):
     """Returns None, or why automatic flashing can't be turned on now"""
     with state.lock:
+        if on and state.data['fw_busy']:
+            return 'the firmware is being changed: try again in a moment'
         if on and state.identifying:
             return 'the Database tab is reading a board: try again in a moment'
         if on and state.data['mode'] not in ('flash', 'update'):
@@ -771,6 +977,10 @@ def make_handler(state, db_path):
             path = urllib.parse.urlsplit(self.path).path
             if path in ('/', '/index.html'):
                 self.reply(page, 'text/html; charset=utf-8')
+            elif path == '/firmware/releases':
+                releases, error = list_releases()
+                body = json.dumps({'releases': releases, 'error': error})
+                self.reply(body.encode(), 'application/json', [('Cache-Control', 'no-cache')])
             elif path == '/db':
                 # The Database tab: every board
                 body = json.dumps({'db': str(db_path), 'columns': boarddb.COLUMNS, 'rows': boarddb.rows(db_path)})
@@ -801,6 +1011,16 @@ def make_handler(state, db_path):
                 self.send_error(404)
 
         def do_POST(self):
+            if urllib.parse.urlsplit(self.path).path == '/firmware/upload':
+                # A local merged image: the file itself is the body
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                length = int(self.headers.get('Content-Length') or 0)
+                if length > MAX_UPLOAD:
+                    self.rfile.read(length)
+                    why = f'too big for a merged image ({length} bytes)'
+                else:
+                    why = select_local(state, (q.get('name') or ['image.bin'])[0], self.rfile.read(length))
+                return self.answer(why, {})
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
             except ValueError:
@@ -808,6 +1028,8 @@ def make_handler(state, db_path):
             extra = {}
             if self.path == '/mode':
                 why = set_mode(state, body.get('mode'))
+            elif self.path == '/firmware/select':
+                why = select_release(state, str(body.get('tag')))
             elif self.path == '/flash/auto':
                 why = set_auto_flash(state, bool(body.get('on')))
             elif self.path == '/cal/start':
@@ -842,11 +1064,12 @@ def make_handler(state, db_path):
             elif self.path == '/db/add':
                 # ... and it isn't in the database: add it (the IDs read just now)
                 with state.lock:
-                    ids = state.identified.get(body.get('key'))
+                    ids, board_state = state.identified.get(body.get('key')) or (None, None)
                 try:
                     if ids is None:
                         raise ValueError('read the board again (it was unplugged?)')
                     boarddb.save_ids(db_path, ids)
+                    boarddb.save_board_state(db_path, ids['unique_id'], board_state)
                     refresh_counts(state, db_path)
                     state.log(f'database: board {ids["serial_mac"]} added')
                     extra = {'unique_id': ids['unique_id']}
@@ -856,6 +1079,9 @@ def make_handler(state, db_path):
             else:
                 self.send_error(404)
                 return
+            self.answer(why, extra)
+
+        def answer(self, why, extra):
             reply = json.dumps({'ok': why is None, 'error': why, **extra}).encode()
             self.send_response(200 if why is None else 409)
             self.send_header('Content-Type', 'application/json')
@@ -887,24 +1113,25 @@ def main():
         image = Path(args.firmware).resolve()
         if not image.exists():
             sys.exit(f'{image}: not found')
-        version = image.name
+        version = image_version(image.read_bytes())
+        fw = load_firmware(image, f'{version} (local)' if version else image.name, 'file', f'file {image.name}')
     else:
-        image, version = fetch_release(args.release or latest_release())
-    sha = sha256_file(image)
+        try:
+            tag = args.release or latest_release()
+            image, version = fetch_release(tag)
+        except RuntimeError as e:
+            sys.exit(str(e))
+        fw = load_firmware(image, version, 'release', f'GitHub release {tag}')
     db_path = Path(args.db).resolve()
-    print(f'firmware {version}: {image} (SHA-256 {sha})')
+    print(f'firmware {fw["version"]}: {image} (SHA-256 {fw["sha"]})')
+    if fw['update_error']:
+        print(f'firmware updates unavailable: {fw["update_error"]}')
     boarddb.init(db_path)
     print(f'records: {db_path}')
 
-    try:
-        updates, update_error = update_parts(image), None
-    except ValueError as e:
-        updates, update_error = None, str(e)
-        print(f'firmware updates unavailable: {e}')
-    state = State(image, version, sha, db_path, update_error)
+    state = State(fw, db_path)
     refresh_counts(state, db_path)
-    threading.Thread(target=worker, args=(state, image, version, sha, db_path, args.identify_only, updates),
-                     daemon=True).start()
+    threading.Thread(target=worker, args=(state, db_path, args.identify_only), daemon=True).start()
     threading.Thread(target=cal_worker, args=(state, db_path, args.ppk2_offset_mv, args.verify_per_segment),
                      daemon=True).start()
     threading.Thread(target=ppk2_watcher, args=(state,), daemon=True).start()

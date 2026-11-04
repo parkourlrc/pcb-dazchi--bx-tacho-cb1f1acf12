@@ -41,6 +41,15 @@ CREATE TABLE IF NOT EXISTS boards (
     cal_attempts         INTEGER,
     cal_detail           TEXT,               -- JSON: {points: [...], verify: [...]}
     cal_count            INTEGER NOT NULL DEFAULT 0,
+    batt_cal             INTEGER,            -- read from the board ('status', Database tab):
+    batt_curve           TEXT,               --   1 if its battery percentage curve was measured
+    black_load_empty_mv  INTEGER,            --   ('cal batt'); the load sensor calibration and
+    black_load_loaded_mv INTEGER,            --   RPM threshold of each launcher ('cal load',
+    black_rpm_thr_mv     INTEGER,            --   'rpm thr'); load NULL: not calibrated
+    white_load_empty_mv  INTEGER,
+    white_load_loaded_mv INTEGER,
+    white_rpm_thr_mv     INTEGER,
+    board_read_at        TEXT,               -- when these were read (cleared by a flash)
     customer_name        TEXT,               -- entered on the Database tab; kept when flashed again
     customer_contact     TEXT,               -- phone, social media account or email
     warranty_since       TEXT,               -- YYYY-MM-DD
@@ -51,13 +60,19 @@ CREATE TABLE IF NOT EXISTS boards (
 
 COLUMNS = ['unique_id', 'serial_mac', 'bt_mac', 'chip', 'flashed_at', 'firmware', 'firmware_sha256', 'flash_port',
            'flash_count', 'fw_update_at', 'fw_update_count', 'cal_at', 'cal_gain', 'cal_offset_mv', 'cal_points', 'cal_max_fit_error_mv', 'cal_verify',
-           'cal_result', 'cal_ppk2_offset_mv', 'cal_attempts', 'cal_detail', 'cal_count', 'customer_name',
+           'cal_result', 'cal_ppk2_offset_mv', 'cal_attempts', 'cal_detail', 'cal_count', 'batt_cal', 'batt_curve',
+           'black_load_empty_mv', 'black_load_loaded_mv', 'black_rpm_thr_mv', 'white_load_empty_mv',
+           'white_load_loaded_mv', 'white_rpm_thr_mv', 'board_read_at', 'customer_name',
            'customer_contact', 'warranty_since', 'notes', 'updated_at']
 CAL_COLUMNS = [c for c in COLUMNS if c.startswith('cal_')]
+# Read from the board's `status` (erased by a flash, so cleared then)
+BOARD_COLUMNS = ['batt_cal', 'batt_curve', 'black_load_empty_mv', 'black_load_loaded_mv', 'black_rpm_thr_mv',
+                 'white_load_empty_mv', 'white_load_loaded_mv', 'white_rpm_thr_mv', 'board_read_at']
 CUSTOMER_COLUMNS = ['customer_name', 'customer_contact', 'warranty_since', 'notes']
 # Columns added after the first version, with their types: added to older databases
 ADDED_COLUMNS = {'customer_name': 'TEXT', 'customer_contact': 'TEXT', 'warranty_since': 'TEXT', 'notes': 'TEXT',
-                 'fw_update_at': 'TEXT', 'fw_update_count': 'INTEGER NOT NULL DEFAULT 0'}
+                 'fw_update_at': 'TEXT', 'fw_update_count': 'INTEGER NOT NULL DEFAULT 0',
+                 **{c: 'TEXT' if c in ('batt_curve', 'board_read_at') else 'INTEGER' for c in BOARD_COLUMNS}}
 
 
 class NoUniqueId(RuntimeError):
@@ -132,7 +147,7 @@ def save_flash(path, ids, firmware, sha, port, at=None):
             'chip = excluded.chip, flashed_at = excluded.flashed_at, firmware = excluded.firmware, '
             'firmware_sha256 = excluded.firmware_sha256, flash_port = excluded.flash_port, '
             'flash_count = flash_count + 1, updated_at = excluded.updated_at, '
-            + ', '.join(f'{c} = NULL' for c in CAL_COLUMNS if c != 'cal_count'),
+            + ', '.join(f'{c} = NULL' for c in CAL_COLUMNS + BOARD_COLUMNS if c != 'cal_count'),
             (uid, ids['serial_mac'], ids.get('bt_mac'), ids.get('chip'), at, firmware, sha, port, at))
         return conn.execute('SELECT flash_count FROM boards WHERE unique_id = ?', (uid,)).fetchone()[0]
 
@@ -172,6 +187,25 @@ def save_ids(path, ids):
             'bt_mac = COALESCE(excluded.bt_mac, bt_mac), chip = COALESCE(excluded.chip, chip), '
             'firmware = COALESCE(excluded.firmware, firmware), updated_at = excluded.updated_at',
             (uid, ids['serial_mac'], ids.get('bt_mac'), ids.get('chip'), ids.get('firmware'), now()))
+
+
+def save_board_state(path, uid, st):
+    """What a board's `status` says about its calibrations (BOARD_COLUMNS but
+    board_read_at; a key left out of st, e.g. by an older firmware that
+    doesn't print it, keeps its value). The last change (updated_at) only
+    moves if a value did. Returns False if the board isn't in the database."""
+    cols = [c for c in BOARD_COLUMNS if c in st and c != 'board_read_at']
+    with closing(connect(path)) as conn, conn:
+        row = conn.execute('SELECT * FROM boards WHERE unique_id = ?', (uid,)).fetchone()
+        if row is None:
+            return False
+        at = now()
+        changed = any(row[c] != st[c] for c in cols)
+        conn.execute(
+            'UPDATE boards SET ' + ''.join(f'{c} = ?, ' for c in cols) + 'board_read_at = ?'
+            + (', updated_at = ?' if changed else '') + ' WHERE unique_id = ?',
+            (*(st[c] for c in cols), at, *((at,) if changed else ()), uid))
+        return True
 
 
 def save_cal(path, ids, cal, detail, at=None):

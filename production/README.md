@@ -37,9 +37,18 @@ board you want to keep as it is.
   (asked from GitHub at each start; without internet, the newest release
   downloaded before), downloaded once into `firmware/<tag>/` and checked
   against the release's
-  `SHA256SUMS.txt`. `--release v2.5.0` picks another release; `--firmware
-  file.bin` flashes a local merged image (no check). The page shows the
-  version and SHA-256 being flashed.
+  `SHA256SUMS.txt`. `--release v2.5.0` starts with another release;
+  `--firmware file.bin` with a local merged image (no checksum to check).
+  On the Flash and Update tabs, the **Firmware** dropdown lists the GitHub
+  releases that have a merged image, newest version first (asked again every
+  few minutes; offline, the ones downloaded before), and choosing one
+  downloads and checks it; **Choose a file on this PC…** takes a merged image
+  (`bx-tacho-vX.Y.Z-merged.bin`; it must have the bootloader, partition
+  table and app description, and its version is read from it), kept in
+  `firmware/local/`. The firmware can only be changed while automatic
+  flashing or update is off. Each board gets the firmware chosen when it was
+  plugged in; the page shows its version and SHA-256, and the records say
+  `vX.Y.Z (local)` for a local file.
 - **Records:** see [Database](#database) below. A board flashed again
   updates its row (flash count up by one) and loses its calibration there,
   since erasing the chip erased it.
@@ -139,6 +148,9 @@ recorded: it fails with that reason (all ESP32-C3 v0.4 have one).
 | `cal_at`, `cal_gain`, `cal_offset_mv`, `cal_points`, `cal_max_fit_error_mv`, `cal_result`, `cal_ppk2_offset_mv`, `cal_attempts` | the VBAT calibration (empty again after a flash) |
 | `cal_verify`, `cal_detail` | the checks as `actual:error; ...`, and the points and checks as JSON |
 | `cal_count` | calibrations so far |
+| `batt_cal`, `batt_curve` | whether the battery percentage curve was measured (`cal batt`): 1, or 0 for the rough default; and its line from `status` |
+| `black_load_empty_mv`, `black_load_loaded_mv`, `black_rpm_thr_mv` (and `white_...`) | each launcher's load sensor calibration (`cal load`; empty: not calibrated) and RPM threshold |
+| `board_read_at` | when the last two rows were read from the board (Database tab); all of them are cleared by a flash, which erases them |
 | `customer_name`, `customer_contact`, `warranty_since`, `notes` | entered by hand on the Database tab; kept when the board is flashed or calibrated again. `warranty_since` is a date (YYYY-MM-DD) |
 | `updated_at` | the last change |
 
@@ -162,7 +174,12 @@ isn't changed.
 has settled, the tool reads its IDs from the firmware console (`id`). A board
 in the database gets its row selected (clearing the search if it hid it); one
 that isn't is offered with **Add to the database** (its IDs, and the firmware
-version it runs, from `status`), or **Not now**. Until a board answers, it is tried again every second (showing the
+version it runs, from `status`), or **Not now**. Either way its row gets
+what `status` says about its battery curve and both launchers' load
+calibration and RPM threshold (the **Batt %**, **Black load** and **White
+load** columns; the thresholds and read time are in its details). Reading
+it again changes the last change time only if one of them changed; a
+firmware that doesn't print one of them leaves that column as it was. Until a board answers, it is tried again every second (showing the
 last reason: its console still starting, no firmware on it, automatic
 flashing or update on), for as long as it stays plugged in and the tab stays
 open. Several boards plugged in at once are read one after another.

@@ -113,6 +113,17 @@
   .save-btn:disabled { opacity: 0.4; cursor: default; }
   #customer-status { font-size: 0.9rem; color: var(--muted); }
   #customer-status.bad { color: var(--bad); }
+  .fw-pick { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+  .fw-pick label { font-weight: 600; }
+  .fw-pick select, .fw-pick button { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--ink); }
+  .fw-pick select { flex: 1 1 260px; max-width: 420px; }
+  .fw-pick button { cursor: pointer; color: var(--wait); border-color: var(--wait); font-weight: 600; }
+  .fw-pick select:disabled, .fw-pick button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .fw-info { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 0.9rem; overflow-wrap: anywhere; }
+  .fw-info code { font-family: var(--mono); }
+  .fw-info .bad { color: var(--bad); }
+  .fw-info .busy { color: var(--busy); font-weight: 600; }
   .detail-head button.danger { color: var(--bad); }
   .confirm { border: 2px solid var(--bad); background: var(--bad-soft); border-radius: 10px; padding: 12px 16px;
     margin-bottom: 16px; display: grid; gap: 10px; }
@@ -155,6 +166,13 @@
 
   <!-- Flash and Update: the same view, worded for the tab -->
   <div class="view" id="view-flash">
+  <section class="fw-pick">
+    <label for="fw-select">Firmware</label>
+    <select id="fw-select"></select>
+    <button id="fw-local">Choose a file on this PC…</button>
+    <input type="file" id="fw-file" accept=".bin" hidden>
+    <p class="fw-info" id="fw-info"></p>
+  </section>
   <div class="status" id="status" data-phase="waiting">
     <h2 id="title">Plug in a board</h2>
     <p id="message">Waiting for an ESP32-C3 on USB</p>
@@ -480,6 +498,9 @@ const DB_COLS = [
   ['cal_max_fit_error_mv', 'Fit error', true, mv],
   ['cal_attempts', 'Tries'],
   ['cal_result', 'VBAT'],
+  ['batt_cal', 'Batt %', false, battCal],
+  ['black_load_empty_mv', 'Black load', true, (v, r) => load(r, 'black')],
+  ['white_load_empty_mv', 'White load', true, (v, r) => load(r, 'white')],
   ['notes', 'Notes', false, null, 'clip'],
 ];
 const DETAIL_LABELS = {
@@ -488,11 +509,24 @@ const DETAIL_LABELS = {
   fw_update_at: 'Firmware updated', fw_update_count: 'Times updated',
   cal_at: 'Calibrated', cal_gain: 'Gain', cal_offset_mv: 'Offset', cal_points: 'Points',
   cal_max_fit_error_mv: 'Max fit error', cal_verify: 'Checks', cal_result: 'VBAT result',
-  cal_ppk2_offset_mv: 'PPK2 offset', cal_attempts: 'Tries', cal_count: 'Times calibrated', updated_at: 'Last change',
+  cal_ppk2_offset_mv: 'PPK2 offset', cal_attempts: 'Tries', cal_count: 'Times calibrated',
+  batt_cal: 'Battery % curve', batt_curve: 'Battery curve', black_load_empty_mv: 'Black: load empty',
+  black_load_loaded_mv: 'Black: loaded', black_rpm_thr_mv: 'Black: RPM threshold',
+  white_load_empty_mv: 'White: load empty', white_load_loaded_mv: 'White: loaded',
+  white_rpm_thr_mv: 'White: RPM threshold', board_read_at: 'Read from the board', updated_at: 'Last change',
 };
+// Read from the board on the Database tab ('status'); empty: not read since it was flashed
+function battCal(v) { return v === null || v === undefined ? '' : (v ? 'calibrated' : 'default'); }
+function load(r, l) {
+  if (r[l + '_rpm_thr_mv'] === null || r[l + '_rpm_thr_mv'] === undefined) return '';
+  return r[l + '_load_empty_mv'] === null ? 'not calibrated'
+    : `${r[l + '_load_empty_mv']} / ${r[l + '_load_loaded_mv']} mV`;
+}
 const DETAIL_FORMAT = {
   flashed_at: when, fw_update_at: when, cal_at: when, updated_at: when, cal_gain: gain, cal_offset_mv: mv,
-  cal_max_fit_error_mv: mv, cal_ppk2_offset_mv: mv,
+  cal_max_fit_error_mv: mv, cal_ppk2_offset_mv: mv, batt_cal: battCal, board_read_at: when,
+  black_load_empty_mv: mv, black_load_loaded_mv: mv, black_rpm_thr_mv: mv,
+  white_load_empty_mv: mv, white_load_loaded_mv: mv, white_rpm_thr_mv: mv,
 };
 
 let dbLoading = false;
@@ -550,7 +584,7 @@ function renderDb() {
     tr.setAttribute('aria-selected', String(r.unique_id === dbSelected));
     tr.dataset.uid = r.unique_id;
     for (const [key, , mono, fmt, cls] of DB_COLS) {
-      const td = key === 'cal_result' ? result(r[key]) : cell(fmt ? fmt(r[key]) : String(r[key] ?? ''), mono);
+      const td = key === 'cal_result' ? result(r[key]) : cell(fmt ? fmt(r[key], r) : String(r[key] ?? ''), mono);
       if (cls) {
         td.classList.add(cls);
         td.title = r[key] || '';
@@ -806,6 +840,87 @@ $('db-delete-yes').addEventListener('click', async () => {
 $('db-search').addEventListener('input', renderDb);
 $('db-detail-close').addEventListener('click', () => { dbSelected = null; renderDb(); });
 
+// ---- The firmware to flash or update with: a GitHub release (newest version
+// first) or a merged image from this PC. Only while nothing is being written.
+let releases = null;        // [{tag, asset, published, latest, downloaded}]
+let releasesError = null;
+let fwKey = null;           // what the dropdown was built from (rebuilt only when that changes)
+
+async function loadReleases() {
+  try {
+    const r = await (await fetch('/firmware/releases')).json();
+    releases = r.releases;
+    releasesError = r.error;
+  } catch {
+    releasesError = 'could not list the releases: is the tool running?';
+  }
+  fwKey = null;
+  if (lastState) renderFw(lastState);
+}
+
+function renderFw(s) {
+  const fw = s.firmware;
+  const locked = s.auto_flash || !!s.fw_busy || s.phase === 'flashing' || s.phase === 'identifying';
+  const sel = $('fw-select');
+  const key = JSON.stringify([releases, fw.version, fw.source, fw.sha256]);
+  if (key !== fwKey) {
+    fwKey = key;
+    sel.innerHTML = '';
+    if (fw.source !== 'release') {
+      sel.append(new Option(`${fw.label} · ${fw.version.replace(/ \(local\)$/, '')}`, '', true, true));
+    }
+    if (!releases) sel.append(new Option('Asking GitHub for the releases…', '', false, false));
+    for (const r of releases || []) {
+      const text = r.tag + (r.latest ? ' (latest)' : '') + (r.prerelease ? ' (pre-release)' : '')
+        + (r.published ? ` · ${r.published}` : '') + (r.downloaded ? '' : ' · to download');
+      const mine = fw.source === 'release' && fw.version === r.tag;
+      sel.append(new Option(text, r.tag, mine, mine));
+    }
+    if (fw.source === 'release' && !(releases || []).some((r) => r.tag === fw.version)) {
+      sel.prepend(new Option(fw.version, '', true, true));   // not (or no longer) listed
+    }
+  }
+  sel.disabled = locked;
+  $('fw-local').disabled = locked;
+
+  const info = $('fw-info');
+  info.innerHTML = '';
+  const span = (text, cls) => Object.assign(document.createElement('span'), { textContent: text, className: cls || '' });
+  if (s.fw_busy) {
+    info.append(span(`${s.fw_busy}…`, 'busy'));
+  } else {
+    info.append(`${fw.label} · SHA-256 `, Object.assign(document.createElement('code'), { textContent: fw.sha256 }));
+    if (s.mode === 'update' && s.update_error) info.append(' · ', span(`updating unavailable: ${s.update_error}`, 'bad'));
+    if (s.auto_flash) info.append(' · ', span('turn automatic ' + (s.mode === 'update' ? 'update' : 'flashing')
+                                              + ' off to change it'));
+  }
+  if (releasesError) info.append(' · ', span(releasesError, 'bad'));
+}
+
+$('fw-select').addEventListener('change', async () => {
+  const tag = $('fw-select').value;
+  if (!tag) return;
+  await post('/firmware/select', { tag });
+  await loadReleases();   // "to download" is gone now; or, refused, back to the firmware in use
+});
+$('fw-local').addEventListener('click', () => $('fw-file').click());
+$('fw-file').addEventListener('change', async () => {
+  const file = $('fw-file').files[0];
+  $('fw-file').value = '';
+  if (!file) return;
+  try {
+    const r = await fetch(`/firmware/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file });
+    const reply = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    $('tab-error').textContent = reply.error ? `${file.name}: ${reply.error}` : '';
+  } catch {
+    $('tab-error').textContent = 'The tool isn\'t running';
+  }
+  fwKey = null;
+  if (lastState) renderFw(lastState);
+});
+loadReleases();
+setInterval(loadReleases, 5 * 60 * 1000);
+
 function render(s) {
   lastState = s;
   for (const mode of ['flash', 'update', 'cal']) {
@@ -829,6 +944,7 @@ function render(s) {
   $('fw').innerHTML = '';
   $('fw').append('Firmware ', Object.assign(document.createElement('code'), { textContent: s.firmware.version }),
     ' · SHA-256 ', Object.assign(document.createElement('code'), { textContent: s.firmware.sha256.slice(0, 16) + '…' }));
+  renderFw(s);
 
   const st = $('status');
   const off = s.phase === 'waiting' && !s.auto_flash;
