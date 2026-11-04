@@ -412,10 +412,11 @@ static void sensor_task(void *arg)
                     d->load_mv = mv >= 0 ? mv : INT_MIN;
                 }
                 cfg = settings_cal(load_launcher());
-                int span = cfg->load_loaded - cfg->load_empty;
+                int empty = load_empty_mv(load_launcher());
+                int span = cfg->load_loaded - empty;
                 d->load_pct_valid = d->led_hold == LOAD_LED_AUTO && cfg->load_cal_valid && d->load_mv != INT_MIN &&
                                     abs(span) >= LOAD_MIN_CONTRAST_MV;
-                d->load_pct = d->load_pct_valid ? (d->load_mv - cfg->load_empty) * 100 / span : 0;
+                d->load_pct = d->load_pct_valid ? (d->load_mv - empty) * 100 / span : 0;
                 d->rpm_on = rpm_is_powered();
                 d->rpm_mv = d->rpm_on ? rpm_read_sense_mv(4) : 0;
                 d->trig = gpio_get_level(PIN_RPM_IR_TRIG) == 1;

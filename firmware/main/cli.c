@@ -163,8 +163,9 @@ static int cmd_status(int argc, char **argv)
     for (int l = 0; l < LAUNCHER_COUNT; l++) {
         const launcher_cal_t *c = settings_cal(l);
         if (c->load_cal_valid) {
-            cli_printf("cal %-7s : load empty %d mV, loaded %d mV; rpm threshold %u mV\n", launcher_name(l),
-                       c->load_empty, c->load_loaded, c->rpm_thr_mv);
+            // The saved levels; the empty level in use is re-learned while empty (load_empty_mv())
+            cli_printf("cal %-7s : load empty %d mV (tracking %d mV), loaded %d mV; rpm threshold %u mV\n",
+                       launcher_name(l), c->load_empty, load_empty_mv(l), c->load_loaded, c->rpm_thr_mv);
         } else {
             cli_printf("cal %-7s : load not calibrated; rpm threshold %u mV\n", launcher_name(l), c->rpm_thr_mv);
         }

@@ -15,7 +15,9 @@
 // regulator drops out; above ~4.4 V the ADC (VBAT / 2) nears its 2.5 V limit
 #define VBAT_CAL_MIN_MV       3200
 #define VBAT_CAL_MAX_MV       4400
-#define VBAT_CAL_VERIFY_TOL_MV 10
+// A check passes within this of the supply: the PPK2 used as the reference is
+// itself off by up to about 10 mV
+#define VBAT_CAL_VERIFY_TOL_MV 15
 
 typedef struct {
     int32_t gain_ppm;       // VBAT mV per pin mV, x1e6 (nominal 2000000: 470k/470k divider)

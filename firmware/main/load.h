@@ -79,3 +79,10 @@ launcher_t load_launcher(void);
 
 // Position of the last sample between the empty (0) and loaded (100) levels
 int load_last_percent(void);
+
+// The empty level in use for a launcher (mV): its saved calibration
+// (settings_cal()->load_empty), as re-learned since boot while the launcher
+// sat empty (load_classify()). Kept in RAM only, apart from the settings, so
+// saving them never stores it; back to the saved level when that calibration
+// changes.
+int load_empty_mv(launcher_t launcher);

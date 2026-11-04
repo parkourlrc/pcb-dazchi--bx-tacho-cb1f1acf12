@@ -55,6 +55,7 @@ static const char *TAG = "load";
 #define LAUNCHER_WHITE_HOLD_US 3000000
 
 // While empty, slowly track the baseline so drift does not cause false loads
+// (load_empty_mv(): the saved calibration stays as it is)
 #define BASELINE_TRACK_PCT  20
 #define BASELINE_DIV        32  // EMA weight 1/32
 
@@ -86,6 +87,12 @@ static launcher_t s_launcher;   // black until a reading says otherwise
 static int s_launcher_streak;     // readings in a row pointing to black
 static bool s_white_pending;      // readings above the white threshold...
 static int64_t s_white_since_us;  // ...without a break since then
+
+// The empty level in use, per launcher (load_empty_mv()), and the calibration
+// it was started from: a new one (cal load, cfg reset) starts it again
+static int s_empty_mv[LAUNCHER_COUNT];
+static launcher_cal_t s_empty_from[LAUNCHER_COUNT];
+static bool s_empty_init[LAUNCHER_COUNT];
 
 static inline void IRAM_ATTR led_set(bool on)
 {
@@ -381,16 +388,38 @@ launcher_t load_launcher(void)
     return s_launcher;
 }
 
-// Position of a reading between a launcher's empty (0) and loaded (100) levels,
-// or false without a usable calibration for it
+// The re-learned empty level of a launcher, started again from its saved
+// calibration whenever that changed
+static int *empty_level(launcher_t launcher)
+{
+    int l = launcher == LAUNCHER_WHITE ? LAUNCHER_WHITE : LAUNCHER_BLACK;
+    const launcher_cal_t *cal = settings_cal(l);
+    const launcher_cal_t *from = &s_empty_from[l];
+    if (!s_empty_init[l] || cal->load_empty != from->load_empty || cal->load_loaded != from->load_loaded ||
+        cal->load_cal_valid != from->load_cal_valid) {
+        s_empty_from[l] = *cal;
+        s_empty_mv[l] = cal->load_empty;
+        s_empty_init[l] = true;
+    }
+    return &s_empty_mv[l];
+}
+
+int load_empty_mv(launcher_t launcher)
+{
+    return *empty_level(launcher);
+}
+
+// Position of a reading between a launcher's empty (0, as re-learned) and
+// loaded (100) levels, or false without a usable calibration for it
 static bool cal_percent(launcher_t launcher, int diff_mv, int *pct)
 {
     const launcher_cal_t *cal = settings_cal(launcher);
-    int span = cal->load_loaded - cal->load_empty;
+    int empty = load_empty_mv(launcher);
+    int span = cal->load_loaded - empty;
     if (!cal->load_cal_valid || abs(span) < LOAD_MIN_CONTRAST_MV) {
         return false;
     }
-    *pct = (diff_mv - cal->load_empty) * 100 / span;
+    *pct = (diff_mv - empty) * 100 / span;
     return true;
 }
 
@@ -437,10 +466,8 @@ launcher_t load_track_launcher(int diff_mv, bool may_switch)
         s_white_pending = false;
         // Start from where this reading lies on the new launcher's scale, not from
         // the old state, so the switch itself isn't taken for a load or a release
-        const launcher_cal_t *cal = settings_cal(seen);
-        int span = cal->load_loaded - cal->load_empty;
-        s_loaded = cal->load_cal_valid && abs(span) >= LOAD_MIN_CONTRAST_MV &&
-                   (diff_mv - cal->load_empty) * 100 / span > 50;
+        int pct;
+        s_loaded = cal_percent(seen, diff_mv, &pct) && pct > 50;
         s_streak = 0;
     }
     return s_launcher;
@@ -448,17 +475,14 @@ launcher_t load_track_launcher(int diff_mv, bool may_switch)
 
 bool load_classify(int diff_mv, bool may_switch)
 {
-    launcher_cal_t *cfg = settings_cal(load_track_launcher(diff_mv, may_switch));
-    int span = cfg->load_loaded - cfg->load_empty;
+    launcher_t launcher = load_track_launcher(diff_mv, may_switch);
+    int pct;   // works whichever way the signal moves when the center part rises
 
-    if (!cfg->load_cal_valid || diff_mv == INT_MIN || abs(span) < LOAD_MIN_CONTRAST_MV) {
+    if (diff_mv == INT_MIN || !cal_percent(launcher, diff_mv, &pct)) {
         s_loaded = false;
         s_streak = 0;
         return false;
     }
-
-    // Works whichever way the signal moves when the center part rises
-    int pct = (diff_mv - cfg->load_empty) * 100 / span;
     s_last_pct = pct;
 
     bool crossing = s_loaded ? (pct < RELEASED_PCT) : (pct > LOADED_PCT);
@@ -471,12 +495,14 @@ bool load_classify(int diff_mv, bool may_switch)
         s_streak = 0;
     }
 
-    // Re-learn the empty baseline while idle (RAM only; NVS keeps the original),
-    // only near the empty level: readings off the launcher (about 0 mV) would
-    // otherwise drag it down, and it couldn't come back up
+    // Re-learn the empty baseline while idle (load_empty_mv(): RAM only, the
+    // saved calibration isn't changed), only near the empty level: readings off
+    // the launcher (about 0 mV) would otherwise drag it down, and it couldn't
+    // come back up
     if (!s_loaded && pct > -BASELINE_TRACK_PCT && pct < BASELINE_TRACK_PCT && s_launcher_streak == 0 &&
         !s_white_pending) {
-        cfg->load_empty += (diff_mv - cfg->load_empty) / BASELINE_DIV;
+        int *empty = empty_level(launcher);
+        *empty += (diff_mv - *empty) / BASELINE_DIV;
     }
     return s_loaded;
 }
