@@ -32,10 +32,13 @@
 
 #define CLI_MAX_ARGS   8
 #define CLI_PRINT_BUF  256     // on the stack; longer output is formatted on the heap
+// Largest load level 'cal load ... <mV>' takes either way: the ambient-cancelled
+// LOAD_SENSE difference stays within the ADC's range
+#define LOAD_LEVEL_MAX_MV 3300
 
 static void print_vbat_cal(const vbat_cal_t *c);
 
-// 'cal load' levels measured since boot, per launcher
+// 'cal load' levels measured (or set) since boot, per launcher
 static bool s_have_empty[LAUNCHER_COUNT];
 static bool s_have_loaded[LAUNCHER_COUNT];
 
@@ -721,12 +724,17 @@ static int cmd_cal_vbat(int argc, char **argv)
 static int cmd_cal_load(int argc, char **argv)
 {
     // cal load black|white empty|loaded|clear: always named, so a launcher not
-    // detected yet can't take the other one's calibration
+    // detected yet can't take the other one's calibration.
+    // cal load black|white empty|loaded <mV>: set a level directly instead of
+    // measuring it (e.g. one recorded before), checked the same way.
     launcher_t launcher;
-    if (argc != 3 || !parse_launcher(argv[1], &launcher)) {
+    if ((argc != 3 && argc != 4) || !parse_launcher(argv[1], &launcher)) {
         return -1;
     }
     const char *what = argv[2];
+    if (argc == 4 && !strcmp(what, "clear")) {
+        return -1;
+    }
 
     if (!strcmp(what, "clear")) {
         settings_cal(launcher)->load_cal_valid = false;
@@ -739,14 +747,25 @@ static int cmd_cal_load(int argc, char **argv)
     if (!empty && strcmp(what, "loaded")) {
         return -1;
     }
-    if (load_led_held() != LOAD_LED_AUTO) {
-        cli_printf("The load LED is held; run 'load led auto' first.\n");
-        return 1;
-    }
-    int level = average_load();
-    if (level == INT_MIN) {
-        cli_printf("ADC read failed\n");
-        return 1;
+    int level;
+    if (argc == 4) {
+        char *end;
+        long mv = strtol(argv[3], &end, 10);
+        if (*argv[3] == '\0' || *end != '\0' || mv < -LOAD_LEVEL_MAX_MV || mv > LOAD_LEVEL_MAX_MV) {
+            cli_printf("level must be a whole number of mV, %d to %d\n", -LOAD_LEVEL_MAX_MV, LOAD_LEVEL_MAX_MV);
+            return 1;
+        }
+        level = (int)mv;
+    } else {
+        if (load_led_held() != LOAD_LED_AUTO) {
+            cli_printf("The load LED is held; run 'load led auto' first.\n");
+            return 1;
+        }
+        level = average_load();
+        if (level == INT_MIN) {
+            cli_printf("ADC read failed\n");
+            return 1;
+        }
     }
     launcher_cal_t *cal = settings_cal(launcher);
     if (empty) {
@@ -756,7 +775,7 @@ static int cmd_cal_load(int argc, char **argv)
         cal->load_loaded = (int16_t)level;
         s_have_loaded[launcher] = true;
     }
-    cli_printf("%s launcher: %s level %d mV\n", launcher_name(launcher), what, level);
+    cli_printf("%s launcher: %s level %d mV%s\n", launcher_name(launcher), what, level, argc == 4 ? " (set)" : "");
 
     if ((s_have_empty[launcher] && s_have_loaded[launcher]) || cal->load_cal_valid) {
         int span = abs(cal->load_loaded - cal->load_empty);
@@ -858,7 +877,7 @@ static int cmd_cal(int argc, char **argv)
         goto usage;
     }
 usage:
-    cli_printf("usage: cal load black|white empty|loaded|clear\n"
+    cli_printf("usage: cal load black|white empty|loaded [<mV>] | clear\n"
                "       cal vbat start | point <mV> | save | verify <mV> | show | stop\n"
                "       cal batt start | stop | show | clear\n");
     return 1;
@@ -1137,7 +1156,7 @@ static const cli_cmd_t s_cmds[] = {
     {"meter", "meter on|off | meter | meter log [seconds] [interval_ms]: continuous RPM (CSV); Ctrl-C stops the log", cmd_meter},
     {"rpm", "rpm on|off | thr [black|white <mV>] | sense [count] | scan [black|white] [seconds] [apply] (thresholds per launcher: setting one or applying a scan needs the launcher named)", cmd_rpm},
     {"load", "load [count]: print ambient-cancelled LOAD_SENSE readings; load flash [count] [settle_us]: a full poll next to a short flash sample (as while a top is loaded); load led on|off|auto: hold the load LED on or off (diag or meter mode; readings then show the raw LOAD_SENSE), or back to normal", cmd_load},
-    {"cal", "cal load black|white empty|loaded|clear: load sensor, per launcher; cal vbat start|point <mV>|save|verify <mV>|show|stop: production VBAT calibration (kept by 'cfg reset'); cal batt start|stop|show|clear: battery percentage curve from a full discharge (kept by 'cfg reset')", cmd_cal},
+    {"cal", "cal load black|white empty|loaded [<mV>] | clear: load sensor, per launcher (measured, or the level given); cal vbat start|point <mV>|save|verify <mV>|show|stop: production VBAT calibration (kept by 'cfg reset'); cal batt start|stop|show|clear: battery percentage curve from a full discharge (kept by 'cfg reset')", cmd_cal},
     {"cfg", "cfg edges <n> | cfg lightsleep on|off | cfg flip on|off (display turned 180 degrees, for the other hand) | cfg autowhite on|off (automatic white launcher detection; off: always the black launcher's settings) | cfg ext on|off (optional Battle Pass extension, in builds that have one; restarts) | cfg reset", cmd_cfg},
     {"launch", "launch [n]: last launch edge by edge (first n edges, default 60), with the release and dropped edges", cmd_launch},
     {"ble", "ble | ble on|off: Battle Pass emulation and the console over BLE (on|off restarts)", cmd_ble},

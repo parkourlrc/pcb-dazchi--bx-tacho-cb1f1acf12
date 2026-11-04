@@ -43,10 +43,10 @@ idf.py -B build/release -D SDKCONFIG=build/release/sdkconfig -D "SDKCONFIG_DEFAU
 Every build also writes the files to publish, named after `PROJECT_VER` in
 `CMakeLists.txt` (with `-bbp` for a build with the extension):
 
-- `build/release/bx-tacho-v2.4.1.bin`: for updates from the web app (USB or
+- `build/release/bx-tacho-v2.4.2.bin`: for updates from the web app (USB or
   Bluetooth) or `write-flash 0x10000` (with `otadata`, see above). A copy of
   `bx-tacho.bin`, which `idf.py flash` keeps using.
-- `build/release/bx-tacho-v2.4.1-merged.bin`: everything from 0x0 (what
+- `build/release/bx-tacho-v2.4.2-merged.bin`: everything from 0x0 (what
   `idf.py flash` writes), for a blank board (`write-flash 0x0`). It overwrites
   NVS (settings and shot history) but ends below `fctry`, so the battery
   calibration stays.
@@ -90,7 +90,7 @@ Tunables are under **BX Tacho** in `idf.py menuconfig` (`main/Kconfig.projbuild`
 | `rpm thr [black\|white <mV>]` | Show the comparator thresholds, or set one launcher's (capped at 2000 mV) |
 | `load [n]` / `load flash [n]` | Print ambient-cancelled LOAD_SENSE readings; `flash` puts a full poll next to the short flash sample used while a top is loaded |
 | `load led on\|off\|auto` | Hold the load LED on (diag or meter mode), to test its crosstalk into the RPM sensor, or off (no measurement flashes, only ambient light); `load` and the diag screen then show the raw LOAD_SENSE voltage. `auto` goes back to normal measurements, as does leaving diag or meter mode. `rpm scan` keeps it off while it samples. In normal use it is only flashed while the RPM channel is armed, as its light reflected off a loaded top reaches the RPM sensor: at each rising RPM edge while the disc turns, off again within 90 % of the disc's white part (so it can't make or move a rising edge), and every 10 ms while the disc is still |
-| `cal load black\|white empty\|loaded\|clear` | Calibrate the load sensor for one launcher |
+| `cal load black\|white empty\|loaded [<mV>]\|clear` | Calibrate the load sensor for one launcher: measure the empty or loaded level, or set it to the level given (e.g. one recorded before; `status` shows the saved levels). Checked and saved the same way: valid once both levels are in and at least 30 mV apart |
 | `cal vbat start` … `stop` | Production VBAT calibration, see below |
 | `cal batt start\|stop\|show\|clear` | Battery percentage calibration from a full discharge, see below |
 | `cfg edges <n>` | Rising edges per launcher revolution |
