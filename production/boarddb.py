@@ -15,7 +15,7 @@ import sys
 from contextlib import closing
 from pathlib import Path
 
-VERIFY_TOL_MV = 10   # the firmware's VBAT_CAL_VERIFY_TOL_MV, for imported checks
+VERIFY_TOL_MV = 10   # the firmware's VBAT_CAL_VERIFY_TOL_MV when the CSV checks were made (15 from 2.4.1)
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS boards (
@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS boards (
     cal_points           INTEGER,
     cal_max_fit_error_mv INTEGER,
     cal_verify           TEXT,               -- actual:error; ...
-    cal_result           TEXT,               -- PASS | FAIL
+    cal_result           TEXT,               -- PASS | FAIL; CAL: calibrated elsewhere, read from
+                                             --   the board's `status` (gain, offset, points, fit error)
     cal_ppk2_offset_mv   INTEGER,
     cal_attempts         INTEGER,
     cal_detail           TEXT,               -- JSON: {points: [...], verify: [...]}
@@ -189,22 +190,37 @@ def save_ids(path, ids):
             (uid, ids['serial_mac'], ids.get('bt_mac'), ids.get('chip'), ids.get('firmware'), now()))
 
 
+STATUS_CAL_COLUMNS = ['cal_gain', 'cal_offset_mv', 'cal_points', 'cal_max_fit_error_mv', 'cal_result']
+
+
 def save_board_state(path, uid, st):
     """What a board's `status` says about its calibrations (BOARD_COLUMNS but
     board_read_at; a key left out of st, e.g. by an older firmware that
-    doesn't print it, keeps its value). The last change (updated_at) only
-    moves if a value did. Returns False if the board isn't in the database."""
-    cols = [c for c in BOARD_COLUMNS if c in st and c != 'board_read_at']
+    doesn't print it, keeps its value).
+
+    st['vbat'], if there, is its VBAT calibration: a dict with gain,
+    offset_mv, points, max_fit_error_mv, or None for none. It is recorded
+    with cal_result CAL only for a board without a calibration by this tool
+    (PASS/FAIL, which says more), and a CAL goes again when the board has
+    none any more.
+
+    The last change (updated_at) only moves if a value did. Returns False if
+    the board isn't in the database."""
     with closing(connect(path)) as conn, conn:
         row = conn.execute('SELECT * FROM boards WHERE unique_id = ?', (uid,)).fetchone()
         if row is None:
             return False
+        values = {c: st[c] for c in BOARD_COLUMNS if c in st and c != 'board_read_at'}
+        if 'vbat' in st and row['cal_result'] in (None, 'CAL'):
+            v = st['vbat']
+            values.update(zip(STATUS_CAL_COLUMNS, (float(v['gain']), v['offset_mv'], v['points'],
+                                                   v['max_fit_error_mv'], 'CAL') if v else (None,) * 5))
         at = now()
-        changed = any(row[c] != st[c] for c in cols)
+        changed = any(row[c] != values[c] for c in values)
         conn.execute(
-            'UPDATE boards SET ' + ''.join(f'{c} = ?, ' for c in cols) + 'board_read_at = ?'
+            'UPDATE boards SET ' + ''.join(f'{c} = ?, ' for c in values) + 'board_read_at = ?'
             + (', updated_at = ?' if changed else '') + ' WHERE unique_id = ?',
-            (*(st[c] for c in cols), at, *((at,) if changed else ()), uid))
+            (*values.values(), at, *((at,) if changed else ()), uid))
         return True
 
 

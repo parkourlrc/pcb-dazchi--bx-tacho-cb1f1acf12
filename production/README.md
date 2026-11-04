@@ -83,8 +83,10 @@ moved to the current one too.
 
 Automatic update is off whenever the tab is opened, like automatic flashing;
 turn it on with no board on USB, then plug in the boards. Each update goes to
-the board's row (`fw_update_at`, `fw_update_count`, `firmware`), and the page
-shows whether a calibration is recorded for it. If the image isn't laid out
+the board's row (`fw_update_at`, `fw_update_count`, `firmware`). The tool
+then reads the board's `status` as on the Database tab (calibrations, below),
+and the page shows its VBAT calibration (PASS, FAIL, CAL, or empty for none
+known). If the image isn't laid out
 as above (a `--firmware` file of another kind), updating is unavailable and
 the tab says why.
 
@@ -112,7 +114,7 @@ nothing until it is turned on again.
      shares the 3 tries with failed checks below, and a third rejection ends
      the run as failed, with nothing recorded;
    - `cal vbat verify` at one random voltage between each two points (5 in
-     all; `--verify-per-segment N` for more), each must be within ±10 mV.
+     all; `--verify-per-segment N` for more), each must be within ±15 mV (the firmware decides).
      The first failed check ends the checks and the calibration starts over
      from `cal vbat start` (new points, new fit), up to 3 tries in all; after
      the third the board is recorded as FAIL;
@@ -145,7 +147,7 @@ recorded: it fails with that reason (all ESP32-C3 v0.4 have one).
 | `flashed_at`, `flash_count` | the last full flash (erase and merged image), and how many there were |
 | `fw_update_at`, `fw_update_count` | the last firmware update (Update tab), and how many there were |
 | `firmware`, `firmware_sha256`, `flash_port` | what the last flash or update wrote, and where |
-| `cal_at`, `cal_gain`, `cal_offset_mv`, `cal_points`, `cal_max_fit_error_mv`, `cal_result`, `cal_ppk2_offset_mv`, `cal_attempts` | the VBAT calibration (empty again after a flash) |
+| `cal_at`, `cal_gain`, `cal_offset_mv`, `cal_points`, `cal_max_fit_error_mv`, `cal_result`, `cal_ppk2_offset_mv`, `cal_attempts` | the VBAT calibration (empty again after a flash). `cal_result` CAL: calibrated elsewhere (by hand with `cal vbat`), with only the gain, offset, points and fit error from `status` |
 | `cal_verify`, `cal_detail` | the checks as `actual:error; ...`, and the points and checks as JSON |
 | `cal_count` | calibrations so far |
 | `batt_cal`, `batt_curve` | whether the battery percentage curve was measured (`cal batt`): 1, or 0 for the rough default; and its line from `status` |
@@ -177,7 +179,10 @@ that isn't is offered with **Add to the database** (its IDs, and the firmware
 version it runs, from `status`), or **Not now**. Either way its row gets
 what `status` says about its battery curve and both launchers' load
 calibration and RPM threshold (the **Batt %**, **Black load** and **White
-load** columns; the thresholds and read time are in its details). Reading
+load** columns; the thresholds and read time are in its details). A board
+with a VBAT calibration this tool didn't make gets it recorded as **CAL**
+(gain, offset, points, fit error), and loses it again once the board has
+none; a calibration by this tool (PASS/FAIL) is left as it is. Reading
 it again changes the last change time only if one of them changed; a
 firmware that doesn't print one of them leaves that column as it was. Until a board answers, it is tried again every second (showing the
 last reason: its console still starting, no firmware on it, automatic

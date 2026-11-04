@@ -396,7 +396,7 @@ function gain(v) {
 }
 function result(v) {
   const td = cell(v || '');
-  if (v) td.className = v === 'PASS' ? 'pass' : 'fail';
+  if (v) td.className = v === 'PASS' || v === 'CAL' ? 'pass' : 'fail';   // CAL: calibrated elsewhere
   return td;
 }
 function fillPoints(tbody, points) {
@@ -992,7 +992,7 @@ function render(s) {
     const tr = document.createElement('tr');
     tr.append(cell(when(upd ? r.fw_update_at : r.flashed_at)), cell(r.serial_mac, true), cell(r.bt_mac, true),
               cell(r.unique_id, true), cell(r.firmware), cell(String(upd ? r.fw_update_count : r.flash_count)));
-    if (upd) tr.append(r.cal_result ? result(r.cal_result) : cell('none'));
+    if (upd) tr.append(result(r.cal_result));
     body.append(tr);
   }
 

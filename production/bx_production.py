@@ -457,16 +457,24 @@ ID_PATTERNS = {
 }
 RE_FIRMWARE = re.compile(r'firmware\s*:\s*\S+ (v[^\s,]+)')   # in `status`
 # Also in `status`: the battery percentage curve, and per launcher the load
-# calibration and RPM threshold
+# calibration and RPM threshold. The saved empty level is taken, not the one
+# re-learned since boot ("(tracking N mV)"; firmware up to 2.4.0 prints only
+# the re-learned one, as "load empty N mV")
 RE_BATT_CURVE = re.compile(r'^batt curve\s*:\s*(.+?)\s*$', re.M)
-RE_LAUNCHER_CAL = re.compile(r'^cal (black|white)\s*:\s*(?:load empty (-?\d+) mV, loaded (-?\d+) mV|load not calibrated)'
-                             r'; rpm threshold (\d+) mV', re.M)
+RE_VBAT_CAL = re.compile(r'^vbat cal\s*:\s*(?:gain (\d+\.\d+), offset (-?\d+) mV, (\d+) points over [-\d]+ mV, '
+                         r'max fit error (\d+) mV|(none))', re.M)
+RE_LAUNCHER_CAL = re.compile(r'^cal (black|white)\s*:\s*(?:load empty (-?\d+) mV(?: \(tracking -?\d+ mV\))?, '
+                             r'loaded (-?\d+) mV|load not calibrated); rpm threshold (\d+) mV', re.M)
 
 
 def parse_board_state(text):
     """The boarddb.BOARD_COLUMNS that `status` shows (an older firmware shows
     fewer: those left out stay as they are in the database)"""
     st = {}
+    m = RE_VBAT_CAL.search(text)
+    if m:
+        st['vbat'] = None if m.group(5) else {'gain': m.group(1), 'offset_mv': int(m.group(2)),
+                                              'points': int(m.group(3)), 'max_fit_error_mv': int(m.group(4))}
     m = RE_BATT_CURVE.search(text)
     if m:
         curve = re.sub(r"\s*\('cal batt [^)]*\)", '', m.group(1))   # without the hint
@@ -647,10 +655,19 @@ def worker(state, db_path, identify_only):
                 boarddb.save_ids(db_path, ids)
             elif job == 'update':
                 boarddb.save_update(db_path, ids, version, sha, port)
+                # What it says now about its calibrations (a VBAT calibration made
+                # elsewhere shows as CAL)
+                try:
+                    board_state = read_board_state(port)
+                    boarddb.save_board_state(db_path, ids['unique_id'], board_state)
+                    state.log(describe_board_state(board_state))
+                except Exception as e:   # noqa: BLE001 - only extra information: the update is done
+                    state.log(f'could not read its calibrations from `status` ({e})')
                 rec = boarddb.get(db_path, ids['unique_id'])
                 row['note'] = 'settings and VBAT calibration kept' + (
                     f' (calibration {rec["cal_result"]}, {rec["cal_at"].replace("T", " ")})' if rec['cal_at']
-                    else ' (no calibration recorded for this board)')
+                    else f' (calibrated elsewhere, gain {rec["cal_gain"]:.6f})' if rec['cal_result'] == 'CAL'
+                    else '')
                 state.log(f'updated to {version}: {row["note"]}')
             else:
                 count = boarddb.save_flash(db_path, ids, version, sha, port)
@@ -778,9 +795,22 @@ def identify_board(state, db_path, key):
         state.identify_lock.release()
 
 
+def read_board_state(port):
+    """parse_board_state() of `status`, from a board running the firmware"""
+    con = vbatcal.Console(port)
+    try:
+        if not con.wait_prompt(5.0):
+            raise RuntimeError('no prompt from its console')
+        return parse_board_state(con.cmd('status'))
+    finally:
+        con.close()
+
+
 def describe_board_state(st):
     """For the log: 'batt curve measured, ...; black load 120/860 mV, rpm 1400 mV; ...'"""
     parts = [f'batt curve {st["batt_curve"]}'] if 'batt_curve' in st else []
+    if 'vbat' in st:
+        parts.insert(0, f'VBAT calibration gain {st["vbat"]["gain"]}' if st['vbat'] else 'no VBAT calibration')
     for l in ('black', 'white'):
         if f'{l}_rpm_thr_mv' in st:
             load = (f'{st[l + "_load_empty_mv"]}/{st[l + "_load_loaded_mv"]} mV'
