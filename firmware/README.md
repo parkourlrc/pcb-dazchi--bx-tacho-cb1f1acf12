@@ -43,10 +43,10 @@ idf.py -B build/release -D SDKCONFIG=build/release/sdkconfig -D "SDKCONFIG_DEFAU
 Every build also writes the files to publish, named after `PROJECT_VER` in
 `CMakeLists.txt` (with `-bbp` for a build with the extension):
 
-- `build/release/bx-tacho-v2.4.2.bin`: for updates from the web app (USB or
+- `build/release/bx-tacho-v2.4.3.bin`: for updates from the web app (USB or
   Bluetooth) or `write-flash 0x10000` (with `otadata`, see above). A copy of
   `bx-tacho.bin`, which `idf.py flash` keeps using.
-- `build/release/bx-tacho-v2.4.2-merged.bin`: everything from 0x0 (what
+- `build/release/bx-tacho-v2.4.3-merged.bin`: everything from 0x0 (what
   `idf.py flash` writes), for a blank board (`write-flash 0x0`). It overwrites
   NVS (settings and shot history) but ends below `fctry`, so the battery
   calibration stays.
@@ -146,17 +146,18 @@ launches are still measured; the display shows **ARMED** instead of **READY**.
 A launcher with a white housing reflects far more of the load LED's light
 than a black one, so the same top reads very differently: on the prototype
 about 100 / 300 mV (empty / loaded) on a black launcher and 490 / 750 mV on a
-white one. Pushing the pin up by hand reads higher still (about 500 mV on
+white one. A board without a load calibration uses 100 / 200 mV (black) and
+490 / 690 mV (white). Pushing the pin up by hand reads higher still (about 500 mV on
 black, 1000 mV on white). Each kind keeps its own load calibration and RPM
 threshold (`rpm thr black 80`, `rpm thr white 90`; 80 and 90 mV by default).
 
 BX Tacho starts on the black launcher's settings and changes with two
 thresholds taken from the calibrations:
 
-- above the white launcher's **loaded** threshold (60 % of the way from its
-  empty to its loaded level, 646 mV by default): white. Only a white
+- above the white launcher's **loaded** threshold (90 % of the way from its
+  empty to its loaded level, 670 mV by default): white. Only a white
   launcher reads that high, with a top on it or its pin pushed up.
-- below the black launcher's **released** threshold (40 %, 180 mV by
+- below the black launcher's **released** threshold (40 %, 140 mV by
   default): black. Only a black launcher, or none, reads that low.
 - in between (an empty white launcher, the pin pushed up on a black one): no
   change.

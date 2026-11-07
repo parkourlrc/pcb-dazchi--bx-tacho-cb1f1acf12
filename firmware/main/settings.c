@@ -111,13 +111,13 @@ void settings_reset(void)
                 .rpm_thr_mv = RPM_THR_DEFAULT_MV,
                 .load_cal_valid = true,
                 .load_empty = 100,
-                .load_loaded = 300,
+                .load_loaded = 200,
             },
             [LAUNCHER_WHITE] = {
                 .rpm_thr_mv = RPM_THR_DEFAULT_MV + RPM_THR_OFFSET_MV,
                 .load_cal_valid = true,
                 .load_empty = 490,
-                .load_loaded = 750,
+                .load_loaded = 690,
             },
         },
     };
