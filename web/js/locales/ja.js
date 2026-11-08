@@ -144,6 +144,11 @@ export default {
   'disp.normal': '標準',
   'disp.flipped': '左手用（180° 回転）',
 
+  'cal.label': 'キャリブレーション',
+  'cal.off': 'オフ',
+  'cal.on': 'オン',
+  'cal.help': '診断モード中です。ここをオフにするまでシュートは測定されません。BX Tacho をランチャーに取り付けてからボタンを押してください。empty はベイ未セット、loaded はベイをセットした状態です。',
+
   'note.noSerial': 'このブラウザは USB シリアルポートを開けません。パソコンの Chrome または Edge か、Android の Chrome を使ってください。',
   'note.noBle': 'このブラウザは Bluetooth を使えません。パソコンの Chrome または Edge か、Android の Chrome を使ってください。',
   'note.usbBlocked': 'USB を使うには Bluetooth を切断してください。同時に使える接続は 1 つだけです。',

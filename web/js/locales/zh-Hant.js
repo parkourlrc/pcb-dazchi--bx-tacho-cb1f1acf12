@@ -144,6 +144,11 @@ export default {
   'disp.normal': '正常',
   'disp.flipped': '左手（旋轉 180°）',
 
+  'cal.label': '校正',
+  'cal.off': '關閉',
+  'cal.on': '開啟',
+  'cal.help': '已進入診斷模式，關閉這裡之前不會測量發射。將 BX Tacho 裝到發射器上，再按按鈕：empty 為未裝上陀螺，loaded 為已裝上陀螺。',
+
   'note.noSerial': '此瀏覽器無法開啟 USB 序列埠。請在電腦上使用 Chrome 或 Edge，或在 Android 上使用 Chrome。',
   'note.noBle': '此瀏覽器無法使用藍牙。請在電腦上使用 Chrome 或 Edge，或在 Android 上使用 Chrome。',
   'note.usbBlocked': '請先中斷藍牙連線才能使用 USB，一次只能使用一種連線。',

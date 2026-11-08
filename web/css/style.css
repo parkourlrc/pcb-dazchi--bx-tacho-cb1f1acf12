@@ -702,6 +702,16 @@ button {
   color: var(--muted);
 }
 
+/* The calibration buttons under a console, shown while Calibration is on */
+.cal {
+  display: grid;
+  gap: 8px;
+}
+
+.cal .aside-text {
+  margin: 0;
+}
+
 .curve {
   margin: 0;
   background: var(--surface);

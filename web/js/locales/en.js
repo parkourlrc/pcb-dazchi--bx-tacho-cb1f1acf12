@@ -145,6 +145,11 @@ export default {
   'disp.normal': 'Normal',
   'disp.flipped': 'Left-handed (turned 180°)',
 
+  'cal.label': 'Calibration',
+  'cal.off': 'Off',
+  'cal.on': 'On',
+  'cal.help': 'Diagnostic mode is on, so launches aren\'t measured until you turn this off. Fit BX Tacho on the launcher, then press a button: empty with no top attached, loaded with a top attached.',
+
   'note.noSerial': "This browser can't open USB serial ports. Use Chrome or Edge on a computer, or Chrome on Android.",
   'note.noBle': "This browser can't use Bluetooth. Use Chrome or Edge on a computer, or Chrome on Android.",
   'note.usbBlocked': 'Disconnect Bluetooth to use USB. One connection at a time.',

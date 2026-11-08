@@ -144,6 +144,11 @@ export default {
   'disp.normal': '正常',
   'disp.flipped': '左手（旋转 180°）',
 
+  'cal.label': '校准',
+  'cal.off': '关闭',
+  'cal.on': '开启',
+  'cal.help': '已进入诊断模式，关闭这里之前不会测量发射。将 BX Tacho 装到发射器上，再按按钮：empty 为未装上陀螺，loaded 为已装上陀螺。',
+
   'note.noSerial': '此浏览器无法打开 USB 串口。请在电脑上使用 Chrome 或 Edge，或在 Android 上使用 Chrome。',
   'note.noBle': '此浏览器无法使用蓝牙。请在电脑上使用 Chrome 或 Edge，或在 Android 上使用 Chrome。',
   'note.usbBlocked': '请先断开蓝牙连接才能使用 USB，一次只能使用一种连接。',

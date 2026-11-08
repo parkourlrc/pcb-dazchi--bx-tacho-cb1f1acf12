@@ -24,6 +24,7 @@ const state = {
   consoleUsed: false,    // ...opened before: its output stays on screen
   usbUsed: false,        // the USB console was connected before (same)
   flip: null,            // display turned (cfg flip): true/false, null while not known
+  cal: false,            // Calibration under the console is on: BX Tacho is in diag mode
   bfw: null,             // firmware to send over Bluetooth: { bytes, info }
   updating: false,       // ...being sent
   fw: null,              // { bytes, info, name }
@@ -99,7 +100,9 @@ function setLink(kind) {
   updateFlashButton();
   updateBleUpdateButton();
   if (!kind) state.flip = null;   // not known for the next connection
+  if (!kind) state.cal = false;
   renderFlip();
+  renderCal();
 
   if (!serialSupported()) {
     note('usb-note', 'note.noSerial', {}, 'bad');
@@ -221,6 +224,7 @@ term.onData((d) => {
 
 async function connectUsb() {
   if (state.link === 'usb') {
+    await leaveCal();
     await serial.disconnect();
     return;
   }
@@ -485,6 +489,7 @@ async function flash() {
   }
 
   state.flashing = true;
+  state.cal = false;   // the board restarts, out of diag mode
   setLink('usb');
   $('fw-log').textContent = '';
   term.write(`\r\n\x1b[90m${t('term.flashing')}\x1b[0m\r\n`);
@@ -544,6 +549,7 @@ const ble = new BleLink({
 
 async function connectBle() {
   if (state.link === 'ble') {
+    await leaveCal();
     await ble.disconnect();
     return;
   }
@@ -690,6 +696,7 @@ function renderConsole() {
   for (const c of document.querySelectorAll('.quick .chip[data-bcmd]')) c.disabled = !ready || bcon.busy;
   $('bcon-empty').hidden = open || state.consoleUsed;
   renderFlip();
+  renderCal();
 }
 
 // ---- the code dialog
@@ -849,6 +856,56 @@ for (const b of $('ble-flip').querySelectorAll('.seg__btn')) {
     state.flip = b.dataset.flip === 'on';
     renderFlip();
   });
+}
+
+// ---------------------------------------------------------------- calibration
+
+// The Calibration switch under each console: on, BX Tacho goes into diag mode
+// and the cal load buttons show (they're quick commands of that console).
+function renderCal() {
+  for (const kind of ['usb', 'ble']) {
+    for (const b of $(`${kind}-cal`).querySelectorAll('.seg__btn')) {
+      b.setAttribute('aria-pressed', String(state.cal === (b.dataset.cal === 'on')));
+      b.disabled = state.link !== kind || state.flashing || (kind === 'ble' && (bcon.busy || state.updating));
+    }
+    $(`${kind}-cal-panel`).hidden = !state.cal || state.link !== kind;
+  }
+}
+
+async function setCal(on) {
+  if (on === state.cal) return;
+  if (state.link === 'usb') {
+    await serial.write(`diag ${on ? 'on' : 'off'}\r`);
+  } else if (state.link === 'ble') {
+    try {
+      await unlockConsole();   // the code on the display, if the console is locked
+    } catch {
+      return;
+    }
+    await runCommand(`diag ${on ? 'on' : 'off'}`);
+  } else {
+    return;
+  }
+  state.cal = on;
+  renderCal();
+}
+
+for (const kind of ['usb', 'ble']) {
+  for (const b of $(`${kind}-cal`).querySelectorAll('.seg__btn')) {
+    b.addEventListener('click', () => setCal(b.dataset.cal === 'on'));
+  }
+}
+
+// Before disconnecting: don't leave BX Tacho in diag mode, where it doesn't
+// measure launches
+async function leaveCal() {
+  if (!state.cal) return;
+  if (state.link === 'usb') {
+    await serial.write('diag off\r');
+    await new Promise((r) => setTimeout(r, 200));   // for BX Tacho to read it
+  } else if (bcon.open && !bcon.locked) {
+    await runCommand('diag off');
+  }
 }
 
 // ---------------------------------------------------------------- firmware over Bluetooth

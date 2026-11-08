@@ -66,6 +66,22 @@
             <button class="chip" data-cmd="help">help</button>
             <button class="chip chip--quiet" id="term-clear" data-i18n="term.clear">Clear screen</button>
           </div>
+          <div class="setting">
+            <span class="setting__label" id="usb-cal-label" data-i18n="cal.label">Calibration</span>
+            <div class="seg" role="group" aria-labelledby="usb-cal-label" id="usb-cal">
+              <button class="seg__btn" data-cal="off" aria-pressed="true" disabled data-i18n="cal.off">Off</button>
+              <button class="seg__btn" data-cal="on" aria-pressed="false" disabled data-i18n="cal.on">On</button>
+            </div>
+          </div>
+          <div class="cal" id="usb-cal-panel" hidden>
+            <p class="aside-text" data-i18n="cal.help">Diagnostic mode is on, so launches aren't measured until you turn this off. Fit BX Tacho on the launcher, then press a button: empty with no top attached, loaded with a top attached.</p>
+            <div class="quick" aria-labelledby="usb-cal-label">
+              <button class="chip" data-cmd="cal load black empty">cal load black empty</button>
+              <button class="chip" data-cmd="cal load black loaded">cal load black loaded</button>
+              <button class="chip" data-cmd="cal load white empty">cal load white empty</button>
+              <button class="chip" data-cmd="cal load white loaded">cal load white loaded</button>
+            </div>
+          </div>
         </div>
 
         <aside class="flash" aria-labelledby="flash-title">
@@ -201,6 +217,22 @@
           <button class="chip" data-bcmd="ble" disabled>ble</button>
           <button class="chip" data-bcmd="help" disabled>help</button>
           <button class="chip chip--quiet" id="bcon-clear" data-i18n="term.clear">Clear screen</button>
+        </div>
+        <div class="setting">
+          <span class="setting__label" id="ble-cal-label" data-i18n="cal.label">Calibration</span>
+          <div class="seg" role="group" aria-labelledby="ble-cal-label" id="ble-cal">
+            <button class="seg__btn" data-cal="off" aria-pressed="true" disabled data-i18n="cal.off">Off</button>
+            <button class="seg__btn" data-cal="on" aria-pressed="false" disabled data-i18n="cal.on">On</button>
+          </div>
+        </div>
+        <div class="cal" id="ble-cal-panel" hidden>
+          <p class="aside-text" data-i18n="cal.help">Diagnostic mode is on, so launches aren't measured until you turn this off. Fit BX Tacho on the launcher, then press a button: empty with no top attached, loaded with a top attached.</p>
+          <div class="quick" aria-labelledby="ble-cal-label">
+            <button class="chip" data-bcmd="cal load black empty" disabled>cal load black empty</button>
+            <button class="chip" data-bcmd="cal load black loaded" disabled>cal load black loaded</button>
+            <button class="chip" data-bcmd="cal load white empty" disabled>cal load white empty</button>
+            <button class="chip" data-bcmd="cal load white loaded" disabled>cal load white loaded</button>
+          </div>
         </div>
       </section>
 
